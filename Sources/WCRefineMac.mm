@@ -171,7 +171,8 @@ static NSString *WCRRecallNotifyTargetLabel(void) {
 /// 自定义菜单行。原生 NSMenuItem 在动作执行后会结束整个菜单跟踪；勾选项改用
 /// 可交互的 view，点击时直接转发菜单项动作，菜单会继续展开。
 /// 同一套行也给带子菜单、点了就关菜单的项用。标题一律从同一左边距起画。
-/// 同一个菜单里的对号对齐到最长标题的右侧，短标题的对号不会靠左。
+/// 同一个菜单里的开关对号对齐到最长开关标题的右侧，短标题的对号不会靠左。
+/// 版本号、纯子菜单这类没有对号的行不参与这道宽度，否则会把对号顶到菜单右边。
 /// 子菜单箭头留在最右，有勾没勾都不会把标题挤歪。
 static const CGFloat kWCRMenuRowHeight = 28;
 static const CGFloat kWCRMenuRowMinWidth = 248;
@@ -253,7 +254,16 @@ static CGFloat WCRMenuTitleColumnWidth(NSMenu *menu);
 - (void)openSubmenu;
 @end
 
-/// 这一层菜单里最长的标题。对号都画在这道宽度的右侧，上下才是一条直线。
+/// 会画出对号的行。版本说明和只负责展开的子菜单不算，它们的标题往往更长。
+static BOOL WCRMenuRowAlignsCheck(WCRPersistentMenuItemRow *row) {
+    if (!row || !row.interceptsClicks || row.dismissesMenu) return NO;
+    NSMenuItem *item = row.item;
+    if (!item || item.title.length == 0) return NO;
+    if (item.submenu) return [row mirroredToggleItem] != nil;
+    return YES;
+}
+
+/// 这一层菜单里最长的开关标题。对号都画在这道宽度的右侧，上下才是一条直线。
 static CGFloat WCRMenuTitleColumnWidth(NSMenu *menu) {
     if (!menu) return 0;
     NSFont *font = [NSFont menuFontOfSize:0];
@@ -262,6 +272,7 @@ static CGFloat WCRMenuTitleColumnWidth(NSMenu *menu) {
     for (NSMenuItem *item in menu.itemArray) {
         if (item.isSeparatorItem || item.title.length == 0) continue;
         if (![item.view isKindOfClass:[WCRPersistentMenuItemRow class]]) continue;
+        if (!WCRMenuRowAlignsCheck((WCRPersistentMenuItemRow *)item.view)) continue;
         CGFloat width = ceil([item.title sizeWithAttributes:attributes].width);
         if (width > column) column = width;
     }
@@ -1228,11 +1239,11 @@ static BOOL WCRMenuItemChecked(NSMenuItem *item) {
 
     // 宠物大小必须在创建菜单时就放进子菜单。menuNeedsUpdate 里临时插入的行
     // 在这个带搜索框的菜单里不会出现，所以不能再插在开关下面。
-    NSMenu *originalIDMenu = [[NSMenu alloc] initWithTitle:@"启用原始ID查询"];
+    NSMenu *originalIDMenu = [[NSMenu alloc] initWithTitle:@"原始账号查询"];
     originalIDMenu.delegate = self;
     originalIDMenu.autoenablesItems = NO;
 
-    self.originalIDToggleItem = [self persistentMenuItemWithTitle:@"启用原始ID查询"
+    self.originalIDToggleItem = [self persistentMenuItemWithTitle:@"原始账号查询"
                                                            action:@selector(toggleOriginalID:)
                                                              menu:originalIDMenu];
     [originalIDMenu addItem:[NSMenuItem separatorItem]];
@@ -1335,7 +1346,7 @@ static BOOL WCRMenuItemChecked(NSMenuItem *item) {
     self.petHueItem.view = petHueRow;
     [originalIDMenu addItem:self.petHueItem];
 
-    NSMenuItem *originalIDParent = [[NSMenuItem alloc] initWithTitle:@"启用原始ID查询"
+    NSMenuItem *originalIDParent = [[NSMenuItem alloc] initWithTitle:@"原始账号查询"
                                                               action:nil
                                                        keyEquivalent:@""];
     self.originalIDParentItem = originalIDParent;
@@ -1347,7 +1358,7 @@ static BOOL WCRMenuItemChecked(NSMenuItem *item) {
                                                          menu:submenu];
 
     // 父行标题和三个子开关都不同，点父行只展开。子开关各自动作，避免被收成互斥组。
-    NSMenu *voiceAutoTextMenu = [[NSMenu alloc] initWithTitle:@"语音自动转文字"];
+    NSMenu *voiceAutoTextMenu = [[NSMenu alloc] initWithTitle:@"语音自动转文"];
     voiceAutoTextMenu.delegate = self;
     voiceAutoTextMenu.autoenablesItems = NO;
     self.voiceAutoTextMenu = voiceAutoTextMenu;
@@ -1364,7 +1375,7 @@ static BOOL WCRMenuItemChecked(NSMenuItem *item) {
         [self persistentMenuItemWithTitle:@"忽略自己发的语音"
                                    action:@selector(toggleVoiceAutoTextIgnoreSelf:)
                                      menu:voiceAutoTextMenu];
-    NSMenuItem *voiceAutoTextParent = [[NSMenuItem alloc] initWithTitle:@"语音自动转文字"
+    NSMenuItem *voiceAutoTextParent = [[NSMenuItem alloc] initWithTitle:@"语音自动转文"
                                                                   action:nil
                                                            keyEquivalent:@""];
     self.voiceAutoTextParentItem = voiceAutoTextParent;
@@ -1374,7 +1385,7 @@ static BOOL WCRMenuItemChecked(NSMenuItem *item) {
     self.messageRepeatItem = [self persistentMenuItemWithTitle:@"启用消息复读"
                                                         action:@selector(toggleMessageRepeat:)
                                                           menu:submenu];
-    self.multiSelectLimitItem = [self persistentMenuItemWithTitle:@"多选突破100条"
+    self.multiSelectLimitItem = [self persistentMenuItemWithTitle:@"多选突破上限"
                                                            action:@selector(toggleMultiSelectLimit:)
                                                              menu:submenu];
     self.commentRepeatItem = [self persistentMenuItemWithTitle:@"友圈评论复读"
@@ -2896,7 +2907,7 @@ static BOOL WCRMenuItemChecked(NSMenuItem *item) {
 - (void)showOriginalIDQueryHelp {
     NSAlert *alert = [[NSAlert alloc] init];
     alert.alertStyle = NSAlertStyleInformational;
-    alert.messageText = @"已开启原始ID查询功能";
+    alert.messageText = @"已开启原始账号查询";
     alert.informativeText =
         @"点击右下小宠物即可复制当前会话原始ID\n"
         @"长按可以拖动，双击重置位置";
@@ -2917,7 +2928,7 @@ static BOOL WCRMenuItemChecked(NSMenuItem *item) {
         if (!ok && enable) {
             [self setOriginalIDEnabled:NO];
             [self syncMessageCapture:nil];
-            [self showFailureTitle:@"无法开启原始ID查询" error:error];
+            [self showFailureTitle:@"无法开启原始账号查询" error:error];
         } else if (!ok) {
             os_log_error(WCRLog(), "capture mode uninstall failed: %{public}@",
                          error.localizedDescription ?: @"unknown");
