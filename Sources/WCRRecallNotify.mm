@@ -80,6 +80,43 @@ static const NotifySites kNotifySites[] = {
         0xa5b5968,
         0,
     },
+    {
+        // 复制和转发与复读同一批入口。转发服务全局由 0x47956f8 附近
+        // 4 处 ADRP+LDR 对上 0xa5b9a68。转换函数仍不调用。
+        "270353",
+        0x399694,
+        0x39a888,
+        0x180ffa8,
+        0x18cb50c,
+        0xa006478,
+        0xa5b9a68,
+        0,
+    },
+    {
+        // 复制和转发与复读同一批入口。转发服务是 0x406981c 这条
+        // ADRP+LDR+RET 读到的 0x9d42b68。转换函数仍不调用。
+        "270387",
+        0x378354,
+        0x379548,
+        0x16cb7d8,
+        0x176e424,
+        0x9789fc0,
+        0x9d42b68,
+        0,
+    },
+    {
+        // 复制和转发与复读同一批入口。转发服务是 0x4032264 这条
+        // ADRP+LDR+RET 读到的 0x9d596e8，同页还有多处 ADRP+LDR 读它。
+        // 收件人序言与 270351 不同，见下面的安装核对。转换函数仍不调用。
+        "270390",
+        0x3781ac,
+        0x378e0c,
+        0x16c9170,
+        0x176b498,
+        0x979f158,
+        0x9d596e8,
+        0,
+    },
 };
 
 static const NotifySites *gSites = nullptr;
@@ -116,6 +153,8 @@ constexpr size_t kStringOffsets[] = {
 constexpr uint32_t kCopyPrologue[4] = {0xa9bd57f6, 0xa9014ff4, 0xa9027bfd, 0x910083fd};
 constexpr uint32_t kDestroyPrologue[4] = {0xa9be4ff4, 0xa9017bfd, 0x910043fd, 0xaa0003f3};
 constexpr uint32_t kAddRecipientPrologue[4] = {0xd10183ff, 0xa9025ff8, 0xa90357f6, 0xa9044ff4};
+// 270390 收件人多留了 0x10 栈，参数寄存器没变。
+constexpr uint32_t kAddRecipientPrologue270390[4] = {0xd101c3ff, 0xa9035ff8, 0xa90457f6, 0xa9054ff4};
 constexpr uint32_t kForwardPrologue[4] = {0xd10643ff, 0xa9136ffc, 0xa91467fa, 0xa9155ff8};
 constexpr uint32_t kConvertPrologue[4] = {0xd101c3ff, 0xa9035ff8, 0xa90457f6, 0xa9054ff4};
 
@@ -1018,7 +1057,10 @@ void Deliver(BOOL wantSelf, BOOL wantSession, BOOL wantContacts, BOOL wantForwar
 BOOL WCRRecallNotifySupportsProfile(const WCRPatchProfile *profile) {
     if (!profile || !profile->buildVersion) return NO;
     if (strcmp(profile->buildVersion, "270135") != 0 &&
-        strcmp(profile->buildVersion, "270351") != 0) return NO;
+        strcmp(profile->buildVersion, "270351") != 0 &&
+        strcmp(profile->buildVersion, "270353") != 0 &&
+        strcmp(profile->buildVersion, "270387") != 0 &&
+        strcmp(profile->buildVersion, "270390") != 0) return NO;
     return profile->messageFinalizerAddress != 0 &&
            NotifySitesFor(profile->buildVersion) != nullptr;
 }
@@ -1049,7 +1091,11 @@ BOOL WCRRecallNotifyPrepare(NSError **error) {
         }
     } else if (!VerifyEntry(slide, gSites->messageCopy, kCopyPrologue, @"撤回通知消息复制", error) ||
                !VerifyEntry(slide, gSites->messageDestroy, kDestroyPrologue, @"撤回通知消息析构", error) ||
-               !VerifyEntry(slide, gSites->addRecipient, kAddRecipientPrologue, @"撤回通知收件人", error) ||
+               !VerifyEntry(slide, gSites->addRecipient,
+                            strcmp(gSites->build, "270390") == 0
+                                ? kAddRecipientPrologue270390
+                                : kAddRecipientPrologue,
+                            @"撤回通知收件人", error) ||
                !VerifyEntry(slide, gSites->forwardMessage, kForwardPrologue, @"撤回通知转发", error)) {
         return NO;
     }

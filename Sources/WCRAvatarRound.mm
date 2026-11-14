@@ -65,15 +65,39 @@ constexpr size_t kRadiusYOffset = 476;
 constexpr size_t kGeomPointerOffset = 40;
 constexpr size_t kGeomTopLeftOffset = 20;
 constexpr size_t kGeomBottomRightOffset = 28;
-// 主虚表，imagebase 0。槽 0 是各自的 metaObject，绘制槽在 +456。
-// 0x9d60e00 mmui::XAvatarImage
-// 0x9b80c80 mmui::ContactHeadView（父类 XAvatarImage，会话列表头像）
-// 0x9bde890 mmui::SNSAvatarHeadView（父类 ContactHeadView，朋友圈头像）
+// 对象第一 qword 指向虚表第 0 槽（metaObject）。绘制函数在 +456。
+// 270135 仍用原先登记的三张表，这次没有重新对类名。
 constexpr uint64_t kAvatarVtableOffsets[] = {
     0x9d60e00,
     0x9b80c80,
     0x9bde890,
 };
+// 270351。父类链：ContactHeadView -> XAvatarImage，SNSAvatarHeadView -> ContactHeadView。
+// 0x9eaa000 mmui::XAvatarImage
+// 0x9cc64b8 mmui::ContactHeadView（会话列表头像）
+// 0x9d25388 mmui::SNSAvatarHeadView（朋友圈头像）
+constexpr uint64_t kAvatarVtables270351[] = {
+    0x9eaa000,
+    0x9cc64b8,
+    0x9d25388,
+};
+// 270353 只登记过一张表，当时按错误的 270351 地址加 0x4000 推出来的。
+// 联系人、朋友圈没对上。这次没拿 4.2.0.17 的切片重对，先留着。
+constexpr uint64_t kAvatarVtables270353[] = {
+    0x9d64e00,
+};
+// 270390。绘制函数 0x1dcb5d8，三张表的 +0x1c8 都指向它。
+// 模式仍是 widget+0x1d4，半径仍是 +0x1d8 / +0x1dc。
+// 0x966c060 mmui::XAvatarImage
+// 0x947f0f8 mmui::ContactHeadView
+// 0x94de070 mmui::SNSAvatarHeadView
+constexpr uint64_t kAvatarVtables270390[] = {
+    0x966c060,
+    0x947f0f8,
+    0x94de070,
+};
+static const uint64_t *gAvatarVtables = kAvatarVtableOffsets;
+static size_t gAvatarVtableCount = sizeof(kAvatarVtableOffsets) / sizeof(kAvatarVtableOffsets[0]);
 
 static bool WCRWidgetVtableIn(void *widget, const uint64_t *table, size_t count) {
     uintptr_t vtable = 0;
@@ -88,8 +112,7 @@ static bool WCRWidgetVtableIn(void *widget, const uint64_t *table, size_t count)
 }
 
 static bool WCRWidgetIsAvatar(void *widget) {
-    return WCRWidgetVtableIn(widget, kAvatarVtableOffsets,
-                             sizeof(kAvatarVtableOffsets) / sizeof(kAvatarVtableOffsets[0]));
+    return WCRWidgetVtableIn(widget, gAvatarVtables, gAvatarVtableCount);
 }
 
 static NSError *AvatarRoundError(NSString *message) {
@@ -243,6 +266,20 @@ BOOL WCRAvatarRoundInstall(NSError **error) {
                 @"当前微信构建尚未登记头像绘制函数，功能保持仅偏好模式");
         }
         return NO;
+    }
+    const char *build = profile->buildVersion;
+    if (build && strcmp(build, "270353") == 0) {
+        gAvatarVtables = kAvatarVtables270353;
+        gAvatarVtableCount = sizeof(kAvatarVtables270353) / sizeof(kAvatarVtables270353[0]);
+    } else if (build && strcmp(build, "270351") == 0) {
+        gAvatarVtables = kAvatarVtables270351;
+        gAvatarVtableCount = sizeof(kAvatarVtables270351) / sizeof(kAvatarVtables270351[0]);
+    } else if (build && strcmp(build, "270390") == 0) {
+        gAvatarVtables = kAvatarVtables270390;
+        gAvatarVtableCount = sizeof(kAvatarVtables270390) / sizeof(kAvatarVtables270390[0]);
+    } else {
+        gAvatarVtables = kAvatarVtableOffsets;
+        gAvatarVtableCount = sizeof(kAvatarVtableOffsets) / sizeof(kAvatarVtableOffsets[0]);
     }
 
     uintptr_t slide = 0;

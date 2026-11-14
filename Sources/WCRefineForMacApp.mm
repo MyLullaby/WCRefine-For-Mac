@@ -768,7 +768,7 @@ static void WCRPinFullWidth(NSView *view, NSView *container) {
                                         weight:NSFontWeightBold
                                          color:[NSColor labelColor]
                                      alignment:NSTextAlignmentCenter];
-    NSTextField *subtitleField = [self guideText:@"基于微信 macOS 4.1.15.55（270135）和 4.2.0.15（270351）制作。\n复制一份微信并载入插件，原来的微信不会被修改。"
+    NSTextField *subtitleField = [self guideText:@"基于微信 macOS 4.1.15.55（270135）、4.2.0.15（270351）、4.2.0.17（270353）、4.2.0.51（270387）和 4.2.0.54（270390）制作。\n复制一份微信并载入插件，原来的微信不会被修改。"
                                              size:13
                                            weight:NSFontWeightRegular
                                             color:[NSColor secondaryLabelColor]

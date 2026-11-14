@@ -97,6 +97,16 @@ fi
 
 "$APP_BINARY" "${ARGS[@]}"
 
+SHARE_SRC="$ROOT_DIR/build/WCRefineShare.app"
+SHARE_DEST="${HOME}/Library/Application Support/WCRefine/WCRefineShare.app"
+[[ -d "$SHARE_SRC" ]] || die "其他应用扩展构建失败"
+mkdir -p "$(dirname "$SHARE_DEST")"
+rm -rf "$SHARE_DEST"
+ditto "$SHARE_SRC" "$SHARE_DEST"
+codesign --force --sign - --timestamp=none "$SHARE_DEST"
+LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+"$LSREGISTER" -f "$SHARE_DEST"
+
 if [[ "$MULTI" -ge 2 ]]; then
     cat <<DONE
 

@@ -127,6 +127,80 @@ static const RepeatSites kRepeatSites[] = {
         0x1fbae4,
         0xa002468,
     },
+    {
+        // 270353：代码入口按 270351 的 24 条指令窗口唯一对上。
+        // 动作表 0x9d7d2f0 的 +0x10/+0x30 仍是 clone/invoke。
+        // 菜单样式由 0x1f4ef4c 等 3 处引用一起搬到 0xa497138。
+        "270353",
+        0xd34fec,
+        0xd34970,
+        0x7069338,
+        0x9d7d2f0,
+        0x64e278,
+        0x64e39c,
+        0x72b0d5c,
+        0x72b0d38,
+        0x70127dc,
+        0x399694,
+        0x39a888,
+        0x180ffa8,
+        0x18cb50c,
+        0xa497138,
+        0xd35be4,
+        0xd35f0c,
+        0x1fdae4,
+        0xa006478,
+    },
+    {
+        // 270387：菜单和快照按 270353 的序言加内部窗口对上。
+        // 动作表 0x95252e8 的 +0x10/+0x30 仍是 clone/invoke。
+        // 菜单样式由两处 ADRP+ADD 对上 0x9c1ad90。
+        "270387",
+        0xccbe90,
+        0xccb83c,
+        0x68a8fb4,
+        0x95252e8,
+        0x65651c,
+        0x656640,
+        0x6af4268,
+        0x6af4244,
+        0x6852458,
+        0x378354,
+        0x379548,
+        0x16cb7d8,
+        0x176e424,
+        0x9c1ad90,
+        0xccca48,
+        0xcccd70,
+        0x1fde48,
+        0x9789fc0,
+    },
+    {
+        // 270390：菜单 0xccca9c 前 16 条与 270351 只差 adrp/ldr，16 条只命中这一处。
+        // 动作表 0x95393f8。+0x10 的 clone 把这张表写回对象，+0x30 仍读 [x19,#0x493]。
+        // operator new 0x6abd6d4 与 operator delete 0x6abd6b0 仍相距 0x24。
+        // 菜单样式由两处 ADRP+ADD 对上 0x9c310c0。
+        // 收件人栈帧比 270351 大 0x10，安装时单独核对这版序言。
+        "270390",
+        0xccca9c,
+        0xccc448,
+        0x686e608,
+        0x95393f8,
+        0x6527ec,
+        0x6528d0,
+        0x6abd6d4,
+        0x6abd6b0,
+        0x6817aac,
+        0x3781ac,
+        0x378e0c,
+        0x16c9170,
+        0x176b498,
+        0x9c310c0,
+        0xccd4dc,
+        0xccd990,
+        0x1fe4e4,
+        0x979f158,
+    },
 };
 
 static const RepeatSites *gSites = nullptr;
@@ -824,6 +898,11 @@ BOOL WCRMessageRepeatInstall(const WCRPatchProfile *profile, NSError **error) {
     static const uint32_t messageCopyPrologue[4] = {0xa9bd57f6, 0xa9014ff4, 0xa9027bfd, 0x910083fd};
     static const uint32_t messageDestroyPrologue[4] = {0xa9be4ff4, 0xa9017bfd, 0x910043fd, 0xaa0003f3};
     static const uint32_t addRecipientPrologue[4] = {0xd10183ff, 0xa9025ff8, 0xa90357f6, 0xa9044ff4};
+    // 270390 的收件人多留了 0x10 栈。x0/x1/x2 的用法没变，前 4 条因此不同。
+    static const uint32_t addRecipientPrologue270390[4] = {
+        0xd101c3ff, 0xa9035ff8, 0xa90457f6, 0xa9054ff4};
+    const uint32_t *addPrologue = addRecipientPrologue;
+    if (strcmp(gSites->build, "270390") == 0) addPrologue = addRecipientPrologue270390;
     // 0xcf5264 复制 0x190 字节菜单项，序言与 0xcf4058 相同；不能套用
     // 附近 vector 搬运函数的较短序言。
     static const uint32_t itemCopyPrologue[4] = {0xa9bb67fa, 0xa9015ff8, 0xa90257f6, 0xa9034ff4};
@@ -834,7 +913,7 @@ BOOL WCRMessageRepeatInstall(const WCRPatchProfile *profile, NSError **error) {
         !VerifyEntry(slide, gSites->makeTitle, titlePrologue, "复读标题构造", error) ||
         !VerifyEntry(slide, gSites->messageCopy, messageCopyPrologue, "复读消息快照", error) ||
         !VerifyEntry(slide, gSites->messageDestroy, messageDestroyPrologue, "复读消息快照析构", error) ||
-        !VerifyEntry(slide, gSites->addRecipient, addRecipientPrologue, "复读目标插入", error) ||
+        !VerifyEntry(slide, gSites->addRecipient, addPrologue, "复读目标插入", error) ||
         !VerifyEntry(slide, gSites->forwardMessage, kForwardPrologue, "复读原生转发", error) ||
         !VerifyEntry(slide, gSites->menuItemCopy, itemCopyPrologue, "复读菜单项复制", error) ||
         !VerifyEntry(slide, gSites->menuItemMove, itemMovePrologue, "复读菜单项移动", error) ||

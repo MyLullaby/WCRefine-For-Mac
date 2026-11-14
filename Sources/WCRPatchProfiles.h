@@ -85,11 +85,70 @@ typedef struct {
     uint64_t sessionSelectAddress;
     uint32_t sessionSelectPrologue[3];
 
-    /// 朋友圈评论长按菜单构建函数。270351: 0x1bfd67c。菜单在 x0 返回，
+    /// 新消息入库/刷新会话前的统一过滤函数：
+    /// x0 = 消息管理器，x1 = 0x278 字节的消息对象。返回 1 表示丢弃本条消息。
+    /// 不同构建未登记时保持 0，消息屏蔽拒绝安装，不猜地址。
+    uint64_t messageFilterAddress;
+    uint32_t messageFilterPrologue[4];
+
+    /// 接收循环里填充那条 0x278 消息的解析器。270390: 0x45bf724。
+    /// 唯一调用点是 0x45c1310；0x45c1300 只被接收循环 0x2dd361c 调用。
+    /// x0 是还没填的消息，x1 是源记录。源 +0x14 的类型由 0x45c049c 写入消息 +0x0C。
+    /// 源 +8 / +0x18 / +0x20 是 from / to / 正文的持有者，字符串在持有者 +8。
+    /// 屏蔽提示在解析前改这里，让微信自己做成系统消息。0 表示还没核实。
+    uint64_t messagePrepareAddress;
+    uint32_t messagePreparePrologue[4];
+    /// 微信自己的 libc++ string 赋值。270390: 0x6abcf78。0 表示不能改写正文。
+    uint64_t messageStringAssignAddress;
+
+    /// 朋友圈评论长按菜单构建函数。270351: 0x1bfd67c。270353: 0x1c00a88。270387: 0x1a6bfdc。270390: 0x1a66640。菜单在 x0 返回，
     /// 钩子先执行这 16 字节再追加「复读」。0 表示开关保持关闭。
     /// 不是聊天复读的 repeatMenuBuilderAddress。
     uint64_t commentMenuBuilderAddress;
     uint32_t commentMenuBuilderPrologue[4];
+
+    /// 聊天多选上限。下面每一处都非 0 才支持，缺一处开关置灰。
+    /// 控制器 / 提示窗口改的是初始化时的 mov #100。聊天视图往往在补丁之前
+    /// 就已经建好，字段里仍是 100，所以还要改真正读取这个字段的指令。
+    /// 提示条数、选择拒绝、范围累加、溢出判断都从 ldr 改成 mov #9999。
+    /// 转发窗口从记录向量的 ldp 起，共 8 条。第 4 条是 b.lo，
+    /// 条数达到 101 时写错误码 2（「选择的消息最多不超过100条」）。
+    /// 「选择到这里」不读控制器字段，虚调用取出范围条数后直接 cmp #100，
+    /// 大于等于就弹「最多选择100条」。窗口 6 条，最后一条 b.lt 改成无条件跳过。
+    /// 0 表示这一构建还没核实，不能猜。
+    uint64_t multiSelectControllerAddress;
+    uint32_t multiSelectControllerWindow[4];
+    uint64_t multiSelectTipAddress;
+    uint32_t multiSelectTipWindow[4];
+    uint64_t multiSelectForwardGateAddress;
+    uint32_t multiSelectForwardGateWindow[8];
+    uint64_t multiSelectTooltipAddress;
+    uint32_t multiSelectTooltipWindow[4];
+    uint64_t multiSelectCountGateAddress;
+    uint32_t multiSelectCountGateWindow[4];
+    uint64_t multiSelectRangeGateAddress;
+    uint32_t multiSelectRangeGateWindow[4];
+    uint64_t multiSelectOverflowGateAddress;
+    uint32_t multiSelectOverflowGateWindow[4];
+    uint64_t multiSelectReachGateAddress;
+    uint32_t multiSelectReachGateWindow[6];
+
+    /// 语音视图模型构造。270351: 0x78e98c。x0 是 ChatVoiceItemViewModel，
+    /// 4 个参数，返回 x0。前 16 字节能搬走，但单独不唯一，所以核对 44 字节。
+    /// 第 11 条是 bl，留在原地。0 表示这一构建还没核实。
+    uint64_t voiceAutoTextSetStateAddress;
+    uint32_t voiceAutoTextSetStateWindow[11];
+    /// 官方「转文字」sub_7954DC。x0 是同一个视图模型，w1 必须是 1。
+    /// 只核对 32 字节，不改这条。270351 第 8 条是 adrp。
+    /// 270390 第 7 条是 adrp，第 8 条是 ldr。
+    uint64_t voiceAutoTextOnClickAddress;
+    uint32_t voiceAutoTextOnClickWindow[8];
+    /// 旧的录音条开关。不再作为安装条件，保持 0。
+    uint64_t voiceAutoTextFeatureCheckAddress;
+    uint32_t voiceAutoTextFeatureCheckWindow[6];
+    /// MessageData 对象首 qword 里的虚表。0 表示语音自动转文字仍用 270351 的
+    /// 0xa002468。只在复制函数把这个地址写进对象时登记。
+    uint64_t messageDataVtableAddress;
 } WCRPatchProfile;
 
 typedef struct {

@@ -15,7 +15,7 @@
 #include <cstdio>
 #include <ctime>
 
-// 270351 朋友圈评论长按菜单。菜单对象是构建函数的返回值，所以先跑原函数，
+// 270351 / 270390 朋友圈评论长按菜单。菜单对象是构建函数的返回值，所以先跑原函数，
 // 再把「复读」插到动作列表最前面。点击时用评论行上的正文，再加上这条评论
 // 自带的表情图片，走微信自己的评论发送入口。回复目标留空。不走聊天转发，
 // 也不打开回复框。
@@ -92,6 +92,13 @@ constexpr uint32_t kShareCopyPrologue[4] = {0xa941240a, 0xa900250a, 0xb4000089, 
 constexpr uint32_t kShareReleasePrologue[4] = {0xa9be4ff4, 0xa9017bfd, 0x910043fd, 0xf9400413};
 constexpr uint32_t kDynCastPrologue[4] = {0xd0014e70, 0xf9460210, 0xd61f0200, 0xd0014e70};
 constexpr uint32_t kSubmitPrologue[4] = {0xd10583ff, 0xa9125ff8, 0xa91357f6, 0xa9144ff4};
+// 270390 的 operator new / delete、dynamic_cast、QString 释放和表情单例
+// 仍是 ADRP 跳板，页地址变了。第 4 条是紧挨着的下一条，安装时整段核对。
+constexpr uint32_t kMallocPrologue270390[4] = {0xb0017110, 0xf941a610, 0xd61f0200, 0xb0017110};
+constexpr uint32_t kFreePrologue270390[4] = {0xb0017110, 0xf9419a10, 0xd61f0200, 0xb0017110};
+constexpr uint32_t kQStringFreePrologue270390[4] = {0xf0019868, 0x9121e108, 0xeb08001f, 0x54000040};
+constexpr uint32_t kDynCastPrologue270390[4] = {0x90017110, 0xf940de10, 0xd61f0200, 0x90017110};
+constexpr uint32_t kEmojiTypeGetterPrologue270390[4] = {0xf002e928, 0xf9437500, 0xd65f03c0, 0xd100c3ff};
 
 // 评论列表虚表有 kViewVptrOffset 和 kViewVptrAltOffset 两个兄弟类型。行和列表
 // 之间还有内容容器，要沿父链向上找。评论行有 A/B 两套布局，字段偏移见下方
@@ -139,6 +146,38 @@ constexpr size_t kLayoutBModelOffset = 0x1f0;
 struct CommentSites {
     const char *build;
     uint64_t builder;
+    uint64_t addItem;
+    uint64_t insertAction;
+    uint64_t connect;
+    uint64_t connectCleanup;
+    uint64_t makeTitle;
+    uint64_t malloc;
+    uint64_t free;
+    uint64_t qstringFree;
+    uint64_t stringFromQ;
+    uint64_t stringCopy;
+    uint64_t stringCopyCtor;
+    uint64_t stringDestroy;
+    uint64_t recordAssign;
+    uint64_t emojiTypeGetter;
+    uint64_t textQString;
+    uint64_t textGetter;
+    uint64_t infoDestroy;
+    uint64_t shareCopy;
+    uint64_t shareRelease;
+    uint64_t dynCast;
+    uint64_t submit;
+    uint64_t descriptorSlot;
+    uint64_t actionQMeta;
+    uint64_t triggered;
+    uint64_t typeInfoA;
+    uint64_t typeInfoB;
+    uint64_t viewVptr;
+    uint64_t textVptr;
+    uint64_t emojiVptr;
+    uint64_t viewVptrAlt;
+    uint64_t emojiVptrAlt;
+    uint64_t imageLimit;
 };
 
 struct CommentRowLayout {
@@ -147,8 +186,39 @@ struct CommentRowLayout {
 };
 
 static const CommentSites kCommentSites[] = {
-    {"270351", kBuilderOffset},
+    {
+        "270351",
+        kBuilderOffset, kAddItemOffset, kInsertActionOffset, kConnectOffset, kConnectCleanupOffset,
+        kMakeTitleOffset, kMallocOffset, kFreeOffset, kQStringFreeOffset, kStringFromQOffset,
+        kStringCopyOffset, kStringCopyCtorOffset, kStringDestroyOffset, kRecordAssignOffset,
+        kEmojiTypeGetterOffset, kTextQStringOffset, kTextGetterOffset, kInfoDestroyOffset,
+        kShareCopyOffset, kShareReleaseOffset, kDynCastOffset, kSubmitOffset, kDescriptorSlotOffset,
+        kActionQMetaOffset, kTriggeredOffset, kTypeInfoAOffset, kTypeInfoBOffset, kViewVptrOffset,
+        kTextVptrOffset, kEmojiVptrOffset, kViewVptrAltOffset, kEmojiVptrAltOffset, kWeChatImageSize,
+    },
+    {
+        // 两个长按入口都只调用 0x1a66640。添加、插入、连接、标题、发送的序言没变。
+        // 分配 0x6abd6d4 与释放 0x6abd6b0 仍相距 0x24。dynamic_cast 是旁边另一条跳板。
+        // 发送函数自己调用表情单例 0x4032264，接着仍读虚表 +0x68。
+        // 描述符槽 0x96666d0 的值是菜单样式 0x9c310c0。
+        // 文字虚表 0x94d8628 的 +0x1f8 仍是 0x1eaba6c。
+        // A 型动作仍读 +0x230 和 +0x240，B 型动作仍读 +0x1f0。
+        "270390",
+        0x1a66640, 0x1dbaee8, 0x63710c4, 0x6951c80, 0x694dd94,
+        0x686e608, 0x6abd6d4, 0x6abd6b0, 0x6817aac, 0x20ae34,
+        0x16d4c, 0x29dfc, 0x29f64, 0x18aa828,
+        0x4032264, 0x1a64d64, 0x1eaba6c, 0x1edfd8,
+        0xe8f974, 0x12499c, 0x6abd7d0, 0x19d0d94, 0x96666d0,
+        0x98a3568, 0x6341210, 0x96443e8, 0x9644468, 0x94dd8e0,
+        0x94d8628, 0x964c450, 0x94d92d8, 0x9795118, 0x9c7a130,
+    },
 };
+
+static const uint32_t *PrologueFor(const char *build, const uint32_t *baseline,
+                                   const uint32_t *override270390) {
+    if (build && override270390 && strcmp(build, "270390") == 0) return override270390;
+    return baseline;
+}
 
 static const CommentSites *gSites = nullptr;
 static std::atomic_bool gInstalled(false);
@@ -323,6 +393,7 @@ static bool ObjectParent(uintptr_t object, uintptr_t *parent) {
 
 // 评论行的直接父级是内容容器，不是 0x2c8 的评论列表。沿父链找到列表虚表。
 static bool FindCommentList(void *collect, uintptr_t slide, uintptr_t *view) {
+    if (!gSites) return false;
     uintptr_t current = reinterpret_cast<uintptr_t>(collect);
     uint64_t seen[kMaxParentWalk] = {};
     int count = 0;
@@ -332,7 +403,7 @@ static bool FindCommentList(void *collect, uintptr_t slide, uintptr_t *view) {
         uint64_t vptr = 0;
         if (!ReadU64(reinterpret_cast<void *>(parent), &vptr)) break;
         if (count < kMaxParentWalk) seen[count++] = vptr;
-        if (vptr == slide + kViewVptrOffset || vptr == slide + kViewVptrAltOffset) {
+        if (vptr == slide + gSites->viewVptr || vptr == slide + gSites->viewVptrAlt) {
             uint64_t raw = 0;
             if (ReadU64(reinterpret_cast<void *>(parent + kControllerOffset), &raw) &&
                 PlausiblePointer(raw)) {
@@ -410,11 +481,12 @@ static void ReleaseLongString(uint8_t *text) {
 }
 
 static bool TextWidgetAt(void *collect, uintptr_t slide, size_t offset, uint64_t *widget) {
+    if (!gSites) return false;
     uint64_t candidate = 0;
     uint64_t vptr = 0;
     if (!ReadU64(static_cast<uint8_t *>(collect) + offset, &candidate) ||
         !PlausiblePointer(candidate) || !ReadU64(reinterpret_cast<void *>(candidate), &vptr) ||
-        vptr != slide + kTextVptrOffset) {
+        vptr != slide + gSites->textVptr) {
         return false;
     }
     *widget = candidate;
@@ -467,17 +539,17 @@ static bool CopyVisibleComment(void *collect, uintptr_t slide, size_t widgetOffs
         return false;
     }
     uint64_t vptr = 0;
-    if (!ReadU64(reinterpret_cast<void *>(widget), &vptr) || vptr != slide + kTextVptrOffset) {
+    if (!gSites || !ReadU64(reinterpret_cast<void *>(widget), &vptr) || vptr != slide + gSites->textVptr) {
         LogLine(@"submit: visible text type mismatch");
         return false;
     }
-    if (!VerifyEntry(slide, kTextGetterOffset, kTextGetterPrologue, @"可见评论文字", nullptr)) {
+    if (!VerifyEntry(slide, gSites->textGetter, kTextGetterPrologue, @"可见评论文字", nullptr)) {
         LogLine(@"submit: visible text getter changed");
         return false;
     }
     uint64_t method = 0;
     if (!ReadU64(reinterpret_cast<void *>(vptr + kTextGetterSlot), &method) ||
-        method != slide + kTextGetterOffset) {
+        method != slide + gSites->textGetter) {
         LogLine(@"submit: visible text getter mismatch");
         return false;
     }
@@ -565,8 +637,8 @@ static bool AttachEmoji(void *collect, uintptr_t slide, size_t widgetOffset, uin
         return false;
     }
     uint64_t widgetVptr = 0;
-    if (!ReadU64(reinterpret_cast<void *>(widget), &widgetVptr) ||
-        widgetVptr != slide + kTextVptrOffset) {
+    if (!gSites || !ReadU64(reinterpret_cast<void *>(widget), &widgetVptr) ||
+        widgetVptr != slide + gSites->textVptr) {
         return false;
     }
     uint8_t *comment = reinterpret_cast<uint8_t *>(widget) + kCommentModelOffset;
@@ -579,27 +651,29 @@ static bool AttachEmoji(void *collect, uintptr_t slide, size_t widgetOffset, uin
     }
     uint64_t emojiVptr = 0;
     if (!ReadU64(reinterpret_cast<void *>(emoji), &emojiVptr) ||
-        (emojiVptr != slide + kEmojiVptrOffset && emojiVptr != slide + kEmojiVptrAltOffset)) {
+        (emojiVptr != slide + gSites->emojiVptr && emojiVptr != slide + gSites->emojiVptrAlt)) {
         unsigned long long seen = 0;
         if (emojiVptr >= slide) seen = emojiVptr - slide;
         LogLine([NSString stringWithFormat:@"submit: emoji type mismatch %llx", seen]);
         return false;
     }
-    if (emojiVptr == slide + kEmojiVptrAltOffset) LogLine(@"submit: emoji alternate type");
+    if (emojiVptr == slide + gSites->emojiVptrAlt) LogLine(@"submit: emoji alternate type");
     if (!StringLayoutLooksValid(reinterpret_cast<const uint8_t *>(emoji) + kEmojiStringOffset) ||
         !StringLayoutLooksValid(reinterpret_cast<const uint8_t *>(emoji) + kEmojiString2Offset)) {
         LogLine(@"submit: emoji string layout mismatch");
         return false;
     }
-    if (!VerifyEntry(slide, kStringCopyCtorOffset, kStringCopyCtorPrologue, @"表情字符串复制", nullptr) ||
-        !VerifyEntry(slide, kStringDestroyOffset, kStringDestroyPrologue, @"表情字符串释放", nullptr) ||
-        !VerifyEntry(slide, kRecordAssignOffset, kRecordAssignPrologue, @"表情记录写入", nullptr) ||
-        !VerifyEntry(slide, kEmojiTypeGetterOffset, kEmojiTypeGetterPrologue, @"表情类型", nullptr)) {
+    if (!VerifyEntry(slide, gSites->stringCopyCtor, kStringCopyCtorPrologue, @"表情字符串复制", nullptr) ||
+        !VerifyEntry(slide, gSites->stringDestroy, kStringDestroyPrologue, @"表情字符串释放", nullptr) ||
+        !VerifyEntry(slide, gSites->recordAssign, kRecordAssignPrologue, @"表情记录写入", nullptr) ||
+        !VerifyEntry(slide, gSites->emojiTypeGetter,
+                     PrologueFor(gSites->build, kEmojiTypeGetterPrologue, kEmojiTypeGetterPrologue270390),
+                     @"表情类型", nullptr)) {
         LogLine(@"submit: emoji entry changed");
         return false;
     }
 
-    void *service = reinterpret_cast<EmojiTypeSingletonFn>(slide + kEmojiTypeGetterOffset)();
+    void *service = reinterpret_cast<EmojiTypeSingletonFn>(slide + gSites->emojiTypeGetter)();
     if (!PlausiblePointer(reinterpret_cast<uintptr_t>(service))) {
         LogLine(@"submit: emoji type missing");
         return false;
@@ -608,7 +682,7 @@ static bool AttachEmoji(void *collect, uintptr_t slide, size_t widgetOffset, uin
     uint64_t typeMethod = 0;
     if (!ReadU64(service, &serviceVptr) || !PlausiblePointer(serviceVptr) ||
         !ReadU64(reinterpret_cast<void *>(serviceVptr + kEmojiTypeSlot), &typeMethod) ||
-        typeMethod < slide || typeMethod >= slide + kWeChatImageSize) {
+        typeMethod < slide || typeMethod >= slide + gSites->imageLimit) {
         LogLine(@"submit: emoji type missing");
         return false;
     }
@@ -647,7 +721,7 @@ static void SubmitComment(void *collect) {
         LogLine(@"submit: skipped missing send entry");
         return;
     }
-    if (!VerifyEntry(slide, kSubmitOffset, kSubmitPrologue, @"评论发送入口", nullptr)) {
+    if (!gSites || !VerifyEntry(slide, gSites->submit, kSubmitPrologue, @"评论发送入口", nullptr)) {
         LogLine(@"submit: native send entry changed; skipped");
         return;
     }
@@ -663,8 +737,8 @@ static void SubmitComment(void *collect) {
     }
     void *controller = reinterpret_cast<DynCastFn>(gDynCast)(
         reinterpret_cast<void *>(raw),
-        reinterpret_cast<void *>(slide + kTypeInfoAOffset),
-        reinterpret_cast<void *>(slide + kTypeInfoBOffset),
+        reinterpret_cast<void *>(slide + gSites->typeInfoA),
+        reinterpret_cast<void *>(slide + gSites->typeInfoB),
         0);
     if (!controller) {
         LogLine(@"submit: controller cast failed");
@@ -812,7 +886,7 @@ static void AppendRepeatItem(void *collect, void *menu) {
     if (!slide) return;
 
     uint64_t descriptor = 0;
-    if (!ReadU64(reinterpret_cast<void *>(slide + kDescriptorSlotOffset), &descriptor) ||
+    if (!gSites || !ReadU64(reinterpret_cast<void *>(slide + gSites->descriptorSlot), &descriptor) ||
         !PlausiblePointer(descriptor)) {
         LogLine(@"append: menu descriptor missing");
         return;
@@ -845,10 +919,10 @@ static void AppendRepeatItem(void *collect, void *menu) {
     memcpy(static_cast<uint8_t *>(slot) + 8, &function, sizeof(function));
     memcpy(static_cast<uint8_t *>(slot) + 0x10, &collect, sizeof(collect));
 
-    uint64_t methodPair[2] = {slide + kTriggeredOffset, 0};
+    uint64_t methodPair[2] = {slide + gSites->triggered, 0};
     alignas(16) uint8_t connection[16] = {};
     WCRCommentRepeatConnect(action, methodPair, menu, slot,
-                            reinterpret_cast<void *>(slide + kActionQMetaOffset),
+                            reinterpret_cast<void *>(slide + gSites->actionQMeta),
                             connection);
     if (gConnectCleanup) {
         reinterpret_cast<CleanupFn>(gConnectCleanup)(connection);
@@ -1008,27 +1082,28 @@ BOOL WCRCommentRepeatInstall(const WCRPatchProfile *profile, NSError **error) {
         return NO;
     }
 
-    if (!VerifyEntry(slide, kAddItemOffset, kAddItemPrologue, @"评论菜单添加项", error) ||
-        !VerifyEntry(slide, kInsertActionOffset, kInsertActionPrologue, @"评论菜单插入项", error) ||
-        !VerifyEntry(slide, kConnectOffset, kConnectPrologue, @"评论菜单连接", error) ||
-        !VerifyEntry(slide, kConnectCleanupOffset, kConnectCleanupPrologue, @"评论菜单连接释放", error) ||
-        !VerifyEntry(slide, kMakeTitleOffset, kMakeTitlePrologue, @"评论菜单标题", error) ||
-        !VerifyEntry(slide, kMallocOffset, kMallocPrologue, @"评论菜单分配", error) ||
-        !VerifyEntry(slide, kFreeOffset, kFreePrologue, @"评论菜单释放", error) ||
-        !VerifyEntry(slide, kQStringFreeOffset, kQStringFreePrologue, @"评论菜单标题释放", error) ||
-        !VerifyEntry(slide, kStringFromQOffset, kStringFromQPrologue, @"评论文字转换", error) ||
-        !VerifyEntry(slide, kStringCopyOffset, kStringCopyPrologue, @"评论文字复制", error) ||
-        !VerifyEntry(slide, kStringCopyCtorOffset, kStringCopyCtorPrologue, @"表情字符串复制", error) ||
-        !VerifyEntry(slide, kStringDestroyOffset, kStringDestroyPrologue, @"表情字符串释放", error) ||
-        !VerifyEntry(slide, kRecordAssignOffset, kRecordAssignPrologue, @"表情记录写入", error) ||
-        !VerifyEntry(slide, kEmojiTypeGetterOffset, kEmojiTypeGetterPrologue, @"表情类型", error) ||
-        !VerifyEntry(slide, kTextQStringOffset, kTextQStringPrologue, @"评论文字读取", error) ||
-        !VerifyEntry(slide, kTextGetterOffset, kTextGetterPrologue, @"可见评论文字", error) ||
-        !VerifyEntry(slide, kInfoDestroyOffset, kInfoDestroyPrologue, @"评论内容释放", error) ||
-        !VerifyEntry(slide, kShareCopyOffset, kShareCopyPrologue, @"评论动态复制", error) ||
-        !VerifyEntry(slide, kShareReleaseOffset, kShareReleasePrologue, @"评论动态释放", error) ||
-        !VerifyEntry(slide, kDynCastOffset, kDynCastPrologue, @"评论控制器转换", error) ||
-        !VerifyEntry(slide, kSubmitOffset, kSubmitPrologue, @"评论发送入口", error)) {
+    const char *build = gSites->build;
+    if (!VerifyEntry(slide, gSites->addItem, kAddItemPrologue, @"评论菜单添加项", error) ||
+        !VerifyEntry(slide, gSites->insertAction, kInsertActionPrologue, @"评论菜单插入项", error) ||
+        !VerifyEntry(slide, gSites->connect, kConnectPrologue, @"评论菜单连接", error) ||
+        !VerifyEntry(slide, gSites->connectCleanup, kConnectCleanupPrologue, @"评论菜单连接释放", error) ||
+        !VerifyEntry(slide, gSites->makeTitle, kMakeTitlePrologue, @"评论菜单标题", error) ||
+        !VerifyEntry(slide, gSites->malloc, PrologueFor(build, kMallocPrologue, kMallocPrologue270390), @"评论菜单分配", error) ||
+        !VerifyEntry(slide, gSites->free, PrologueFor(build, kFreePrologue, kFreePrologue270390), @"评论菜单释放", error) ||
+        !VerifyEntry(slide, gSites->qstringFree, PrologueFor(build, kQStringFreePrologue, kQStringFreePrologue270390), @"评论菜单标题释放", error) ||
+        !VerifyEntry(slide, gSites->stringFromQ, kStringFromQPrologue, @"评论文字转换", error) ||
+        !VerifyEntry(slide, gSites->stringCopy, kStringCopyPrologue, @"评论文字复制", error) ||
+        !VerifyEntry(slide, gSites->stringCopyCtor, kStringCopyCtorPrologue, @"表情字符串复制", error) ||
+        !VerifyEntry(slide, gSites->stringDestroy, kStringDestroyPrologue, @"表情字符串释放", error) ||
+        !VerifyEntry(slide, gSites->recordAssign, kRecordAssignPrologue, @"表情记录写入", error) ||
+        !VerifyEntry(slide, gSites->emojiTypeGetter, PrologueFor(build, kEmojiTypeGetterPrologue, kEmojiTypeGetterPrologue270390), @"表情类型", error) ||
+        !VerifyEntry(slide, gSites->textQString, kTextQStringPrologue, @"评论文字读取", error) ||
+        !VerifyEntry(slide, gSites->textGetter, kTextGetterPrologue, @"可见评论文字", error) ||
+        !VerifyEntry(slide, gSites->infoDestroy, kInfoDestroyPrologue, @"评论内容释放", error) ||
+        !VerifyEntry(slide, gSites->shareCopy, kShareCopyPrologue, @"评论动态复制", error) ||
+        !VerifyEntry(slide, gSites->shareRelease, kShareReleasePrologue, @"评论动态释放", error) ||
+        !VerifyEntry(slide, gSites->dynCast, PrologueFor(build, kDynCastPrologue, kDynCastPrologue270390), @"评论控制器转换", error) ||
+        !VerifyEntry(slide, gSites->submit, kSubmitPrologue, @"评论发送入口", error)) {
         return NO;
     }
 
@@ -1057,25 +1132,25 @@ BOOL WCRCommentRepeatInstall(const WCRPatchProfile *profile, NSError **error) {
     memcpy(patch + 8, &hookAddress, sizeof(hookAddress));
 
     gSlide.store(slide);
-    gMalloc = reinterpret_cast<void *>(slide + kMallocOffset);
-    gFree = reinterpret_cast<void *>(slide + kFreeOffset);
-    gQStringFree = reinterpret_cast<void *>(slide + kQStringFreeOffset);
-    gAddItem = reinterpret_cast<void *>(slide + kAddItemOffset);
-    gInsertAction = reinterpret_cast<void *>(slide + kInsertActionOffset);
-    gMakeTitle = reinterpret_cast<void *>(slide + kMakeTitleOffset);
-    gConnectCleanup = reinterpret_cast<void *>(slide + kConnectCleanupOffset);
-    gInfoDestroy = reinterpret_cast<void *>(slide + kInfoDestroyOffset);
-    gStringCopy = reinterpret_cast<void *>(slide + kStringCopyOffset);
-    gStringCopyCtor = reinterpret_cast<void *>(slide + kStringCopyCtorOffset);
-    gStringDestroy = reinterpret_cast<void *>(slide + kStringDestroyOffset);
-    gRecordAssign = reinterpret_cast<void *>(slide + kRecordAssignOffset);
-    gShareRelease = reinterpret_cast<void *>(slide + kShareReleaseOffset);
-    gDynCast = reinterpret_cast<void *>(slide + kDynCastOffset);
-    gSubmit = reinterpret_cast<void *>(slide + kSubmitOffset);
-    gWCRCommentRepeatStringFromQ = reinterpret_cast<void *>(slide + kStringFromQOffset);
-    gWCRCommentRepeatTextQ = reinterpret_cast<void *>(slide + kTextQStringOffset);
-    gWCRCommentRepeatShareCopy = reinterpret_cast<void *>(slide + kShareCopyOffset);
-    gWCRCommentRepeatConnectFn = reinterpret_cast<void *>(slide + kConnectOffset);
+    gMalloc = reinterpret_cast<void *>(slide + gSites->malloc);
+    gFree = reinterpret_cast<void *>(slide + gSites->free);
+    gQStringFree = reinterpret_cast<void *>(slide + gSites->qstringFree);
+    gAddItem = reinterpret_cast<void *>(slide + gSites->addItem);
+    gInsertAction = reinterpret_cast<void *>(slide + gSites->insertAction);
+    gMakeTitle = reinterpret_cast<void *>(slide + gSites->makeTitle);
+    gConnectCleanup = reinterpret_cast<void *>(slide + gSites->connectCleanup);
+    gInfoDestroy = reinterpret_cast<void *>(slide + gSites->infoDestroy);
+    gStringCopy = reinterpret_cast<void *>(slide + gSites->stringCopy);
+    gStringCopyCtor = reinterpret_cast<void *>(slide + gSites->stringCopyCtor);
+    gStringDestroy = reinterpret_cast<void *>(slide + gSites->stringDestroy);
+    gRecordAssign = reinterpret_cast<void *>(slide + gSites->recordAssign);
+    gShareRelease = reinterpret_cast<void *>(slide + gSites->shareRelease);
+    gDynCast = reinterpret_cast<void *>(slide + gSites->dynCast);
+    gSubmit = reinterpret_cast<void *>(slide + gSites->submit);
+    gWCRCommentRepeatStringFromQ = reinterpret_cast<void *>(slide + gSites->stringFromQ);
+    gWCRCommentRepeatTextQ = reinterpret_cast<void *>(slide + gSites->textQString);
+    gWCRCommentRepeatShareCopy = reinterpret_cast<void *>(slide + gSites->shareCopy);
+    gWCRCommentRepeatConnectFn = reinterpret_cast<void *>(slide + gSites->connect);
     gWCRCommentRepeatTrampoline = trampoline;
 
     NSError *patchError = nil;

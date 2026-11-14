@@ -13,6 +13,7 @@ from message objects inside the running WeChat process:
 - message text for the memory-only recall-content cache;
 - message timestamps;
 - names already visible in the message or entered by the user;
+- sender, recipient and message text used to decide whether a message block applies;
 - window sharing state for the screenshot-control feature.
 
 The plugin does not read `contact.db` or message databases directly.
@@ -30,7 +31,7 @@ enhanced WeChat process exits.
 The plugin uses the enhanced copy's own WeChat container for:
 
 - `NSUserDefaults` preferences such as feature toggles, templates, target
-  sessions and pet appearance;
+  sessions, blocked-session IDs, blocked message types and pet appearance;
 - a contact-name cache:
   `Library/Application Support/WCRefine/contact-names.plist`;
 - up to eight configuration backups under

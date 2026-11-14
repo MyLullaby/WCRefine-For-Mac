@@ -3,6 +3,7 @@
 #import <objc/message.h>
 #import <objc/runtime.h>
 #import <os/log.h>
+#import <dlfcn.h>
 #import <mach-o/dyld.h>
 
 #import "WCRPatchProfiles.h"
@@ -10,18 +11,22 @@
 #import "WCROriginalID.h"
 #import "WCRFloatingID.h"
 #import "WCRVoiceForward.h"
+#import "WCRVoiceAutoText.h"
 #import "WCRAvatarRound.h"
 #import "WCRMessageRepeat.h"
 #import "WCRCommentRepeat.h"
+#import "WCRMessageBlock.h"
 #import "WCRMessageCapture.h"
 #import "WCRGroupLeaveMonitor.h"
 #import "WCRScreenCapture.h"
 #import "WCRAutoUpdate.h"
 #import "WCRSessionSelect.h"
 #import "WCRRecallNotify.h"
+#import "WCRMultiSelectLimit.h"
 #import "WCRContactName.h"
 #import "WCRContactPicker.h"
 #import "WCRConfigStore.h"
+#import "WCROtherApps.h"
 
 #include <cstring>
 #include <cstdlib>
@@ -35,6 +40,7 @@ static NSString *const kWCRDefaultsKeyOriginalIDEnabled = @"WCRefineMacOriginalI
 static NSString *const kWCRDefaultsKeyFloatingIDEnabled = @"WCRefineMacFloatingIDEnabled";
 static NSString *const kWCRDefaultsKeyVoiceForwardEnabled = @"WCRefineMacVoiceForwardEnabled";
 static NSString *const kWCRDefaultsKeyMessageRepeatEnabled = @"WCRefineMacMessageRepeatEnabled";
+static NSString *const kWCRDefaultsKeyMultiSelectLimitEnabled = @"WCRefineMacMultiSelectLimitEnabled";
 static NSString *const kWCRDefaultsKeyCommentRepeatEnabled = @"WCRefineMacCommentRepeatEnabled";
 static NSString *const kWCRDefaultsKeyAvatarRoundEnabled = @"WCRefineMacAvatarRoundEnabled";
 static NSString *const kWCRDefaultsKeyGroupLeaveEnabled = @"WCRefineMacGroupLeaveEnabled";
@@ -42,7 +48,7 @@ static NSString *const kWCRDefaultsKeyScreenCaptureBypassEnabled = @"WCRefineMac
 static NSString *const kWCRDefaultsKeyAutoUpdateDisabled = @"WCRefineMacAutoUpdateDisabled";
 
 /// 菜单里展示的插件版本号；随功能变更手动递增。
-static NSString *const kWCRPluginVersion = @"1.0.1";
+static NSString *const kWCRPluginVersion = @"1.0.3";
 
 /// Menu items with a tag >= this value are rebuilt every time the submenu
 /// opens (original-ID rows and the option-key diagnostics entry).
@@ -94,8 +100,23 @@ static NSString *WCRRecallNotifyTargetLabel(void) {
 @property(nonatomic, strong) NSMenuItem *recallNotifyContactsItem;
 @property(nonatomic, strong) NSMenuItem *recallNotifyContactsPickerItem;
 @property(nonatomic, strong) NSMenuItem *voiceForwardItem;
+@property(nonatomic, strong) NSMenu *voiceAutoTextMenu;
+@property(nonatomic, strong) NSMenuItem *voiceAutoTextParentItem;
+@property(nonatomic, strong) NSMenuItem *voiceAutoTextPrivateItem;
+@property(nonatomic, strong) NSMenuItem *voiceAutoTextGroupItem;
+@property(nonatomic, strong) NSMenuItem *voiceAutoTextIgnoreSelfItem;
 @property(nonatomic, strong) NSMenuItem *messageRepeatItem;
+@property(nonatomic, strong) NSMenuItem *multiSelectLimitItem;
 @property(nonatomic, strong) NSMenuItem *commentRepeatItem;
+@property(nonatomic, strong) NSMenuItem *messageBlockItem;
+@property(nonatomic, strong) NSMenuItem *messageBlockParentItem;
+@property(nonatomic, strong) NSMenuItem *messageBlockPickerItem;
+@property(nonatomic, strong) NSMenuItem *messageBlockCurrentItem;
+@property(nonatomic, strong) NSMenu *messageBlockManageMenu;
+@property(nonatomic, strong) NSMenuItem *messageBlockTypeParentItem;
+@property(nonatomic, strong) NSMenuItem *messageBlockAllTypesItem;
+@property(nonatomic, strong) NSArray<NSMenuItem *> *messageBlockTypeItems;
+@property(nonatomic, strong) NSMenuItem *messageBlockShowTipItem;
 @property(nonatomic, strong) NSMenuItem *avatarToggleItem;
 @property(nonatomic, strong) NSMenu *avatarSubmenu;
 @property(nonatomic, strong) NSMenuItem *avatarParentItem;
@@ -108,6 +129,8 @@ static NSString *WCRRecallNotifyTargetLabel(void) {
 @property(nonatomic, strong) NSMenuItem *groupLeaveNotifySelfItem;
 @property(nonatomic, strong) NSMenuItem *screenCaptureItem;
 @property(nonatomic, strong) NSMenuItem *autoUpdateItem;
+@property(nonatomic, strong) NSMenuItem *otherAppsParentItem;
+@property(nonatomic, strong) NSArray<NSMenuItem *> *otherAppItems;
 @property(nonatomic, strong) NSMenuItem *multiOpenItem;
 @property(nonatomic, strong) NSMenu *multiOpenMenu;
 @property(nonatomic, strong) NSMenuItem *originalIDToggleItem;
@@ -130,17 +153,26 @@ static NSString *WCRRecallNotifyTargetLabel(void) {
 /// 语音转发跟随偏好安装菜单入口。关闭时卸掉。
 /// wechat.dylib 还没映射时保留偏好，启动重试再装。
 - (BOOL)syncVoiceForward:(NSError **)error;
+/// 私聊或群聊语音自动转文字开着就安装语音视图构造钩子。两个都关才卸掉。
+/// 「忽略自己发的语音」只读偏好，不单独装钩子。
+- (BOOL)syncVoiceAutoText:(NSError **)error;
 /// 消息复读跟随偏好安装长按菜单 Hook。关闭时卸掉，菜单立即恢复原生。
 - (BOOL)syncMessageRepeat:(NSError **)error;
+/// 多选突破跟随偏好改写条数上限和转发校验。关闭时恢复原来的 100 条。
+- (BOOL)syncMultiSelectLimit:(NSError **)error;
 /// 朋友圈评论复读跟随偏好安装评论菜单 Hook。关闭时卸掉。
 - (BOOL)syncCommentRepeat:(NSError **)error;
+/// 消息屏蔽跟随偏好安装新消息过滤 Hook。关闭时恢复微信原生行为。
+- (BOOL)syncMessageBlock:(NSError **)error;
+- (BOOL)currentProfileSupportsMessageBlock;
 - (BOOL)currentProfileSupportsOriginalID;
 @end
 
 /// 自定义菜单行。原生 NSMenuItem 在动作执行后会结束整个菜单跟踪；勾选项改用
 /// 可交互的 view，点击时直接转发菜单项动作，菜单会继续展开。
-/// 同一套行也给带子菜单、点了就关菜单的项用。标题一律从同一左边距起画；
-/// 对号紧跟标题右侧，子菜单箭头留在最右，有勾没勾都不会把标题挤歪。
+/// 同一套行也给带子菜单、点了就关菜单的项用。标题一律从同一左边距起画。
+/// 同一个菜单里的对号对齐到最长标题的右侧，短标题的对号不会靠左。
+/// 子菜单箭头留在最右，有勾没勾都不会把标题挤歪。
 static const CGFloat kWCRMenuRowHeight = 28;
 static const CGFloat kWCRMenuRowMinWidth = 248;
 static const CGFloat kWCRMenuTitleMinX = 14;
@@ -187,7 +219,7 @@ static void WCRUseIndependentMenuChecks(NSMenu *menu) {
     }
 }
 
-/// 行尾只留给子菜单箭头。对号跟在标题后面，不占最右一列。
+/// 行尾只留给子菜单箭头。对号不占最右一列。
 static CGFloat WCRMenuRowTrailingPad(NSMenuItem *item) {
     CGFloat trailing = kWCRMenuTrailingPad;
     if (item.submenu) trailing += kWCRMenuChevronPad;
@@ -198,6 +230,8 @@ static CGFloat WCRMenuRowAfterTitlePad(void) {
     return kWCRMenuCheckGap + kWCRMenuCheckWidth;
 }
 
+static CGFloat WCRMenuTitleColumnWidth(NSMenu *menu);
+
 @interface WCRPersistentMenuItemRow : NSView
 @property(nonatomic, weak) NSMenuItem *item;
 @property(nonatomic, strong) NSTrackingArea *trackingArea;
@@ -206,6 +240,7 @@ static CGFloat WCRMenuRowAfterTitlePad(void) {
 @property(nonatomic, assign) BOOL dismissesMenu;
 @property(nonatomic, assign) BOOL checked;
 - (void)reflectItemState;
+- (void)applyTitleColumn:(CGFloat)column;
 - (instancetype)initWithMenuItem:(NSMenuItem *)item;
 - (instancetype)initWithMenuItem:(NSMenuItem *)item interceptsClicks:(BOOL)interceptsClicks;
 - (instancetype)initWithMenuItem:(NSMenuItem *)item
@@ -217,6 +252,29 @@ static CGFloat WCRMenuRowAfterTitlePad(void) {
 - (BOOL)eventHitsChevron:(NSEvent *)event;
 - (void)openSubmenu;
 @end
+
+/// 这一层菜单里最长的标题。对号都画在这道宽度的右侧，上下才是一条直线。
+static CGFloat WCRMenuTitleColumnWidth(NSMenu *menu) {
+    if (!menu) return 0;
+    NSFont *font = [NSFont menuFontOfSize:0];
+    NSDictionary *attributes = @{NSFontAttributeName : font};
+    CGFloat column = 0;
+    for (NSMenuItem *item in menu.itemArray) {
+        if (item.isSeparatorItem || item.title.length == 0) continue;
+        if (![item.view isKindOfClass:[WCRPersistentMenuItemRow class]]) continue;
+        CGFloat width = ceil([item.title sizeWithAttributes:attributes].width);
+        if (width > column) column = width;
+    }
+    return column;
+}
+
+static void WCRAlignMenuCheckColumn(NSMenu *menu) {
+    CGFloat column = WCRMenuTitleColumnWidth(menu);
+    for (NSMenuItem *item in menu.itemArray) {
+        if (![item.view isKindOfClass:[WCRPersistentMenuItemRow class]]) continue;
+        [(WCRPersistentMenuItemRow *)item.view applyTitleColumn:column];
+    }
+}
 
 @implementation WCRPersistentMenuItemRow
 
@@ -252,6 +310,20 @@ static CGFloat WCRMenuRowAfterTitlePad(void) {
 - (void)reflectItemState {
     self.checked = self.item.state == NSControlStateValueOn;
     [self setNeedsDisplay:YES];
+}
+
+- (void)applyTitleColumn:(CGFloat)column {
+    NSMenuItem *item = self.item;
+    if (!item) return;
+    NSFont *font = [NSFont menuFontOfSize:0];
+    CGFloat titleWidth = ceil([item.title sizeWithAttributes:@{NSFontAttributeName : font}].width);
+    CGFloat used = MAX(column, titleWidth);
+    CGFloat width = MAX(kWCRMenuRowMinWidth,
+                        kWCRMenuTitleMinX + used + WCRMenuRowAfterTitlePad() +
+                            WCRMenuRowTrailingPad(item));
+    if (fabs(NSWidth(self.frame) - width) > 0.5) {
+        [self setFrameSize:NSMakeSize(width, kWCRMenuRowHeight)];
+    }
 }
 
 - (void)updateTrackingAreas {
@@ -468,16 +540,19 @@ static CGFloat WCRMenuRowAfterTitlePad(void) {
         NSParagraphStyleAttributeName : paragraph,
     };
 
-    CGFloat trailing = WCRMenuRowTrailingPad(item);
-    BOOL on = self.checked;
-    CGFloat afterTitle = on ? WCRMenuRowAfterTitlePad() : 0;
-    CGFloat titleMaxWidth = MAX(0, NSWidth(self.bounds) - kWCRMenuTitleMinX - trailing - afterTitle);
-    CGFloat titleWidth = MIN(ceil([item.title sizeWithAttributes:attributes].width), titleMaxWidth);
+    CGFloat titleWidth = ceil([item.title sizeWithAttributes:attributes].width);
+    CGFloat column = WCRMenuTitleColumnWidth(item.menu);
+    if (column < titleWidth) column = titleWidth;
+    CGFloat checkX = kWCRMenuTitleMinX + column + kWCRMenuCheckGap;
+    CGFloat checkLimit = NSWidth(self.bounds) - WCRMenuRowTrailingPad(item) - kWCRMenuCheckWidth;
+    if (checkX > checkLimit) checkX = kWCRMenuTitleMinX + titleWidth + kWCRMenuCheckGap;
+    CGFloat titleMaxWidth = MAX(0, checkX - kWCRMenuTitleMinX - kWCRMenuCheckGap);
+    CGFloat titleDrawWidth = MIN(titleWidth, titleMaxWidth);
     [item.title drawInRect:NSMakeRect(kWCRMenuTitleMinX, kWCRMenuContentY,
-                                      titleWidth,
+                                      titleDrawWidth,
                                       kWCRMenuContentHeight)
             withAttributes:attributes];
-    if (on) {
+    if (self.checked) {
         NSMutableParagraphStyle *checkParagraph = [[NSMutableParagraphStyle alloc] init];
         checkParagraph.alignment = NSTextAlignmentCenter;
         NSDictionary<NSAttributedStringKey, id> *checkAttributes = @{
@@ -485,8 +560,7 @@ static CGFloat WCRMenuRowAfterTitlePad(void) {
             NSForegroundColorAttributeName : textColor,
             NSParagraphStyleAttributeName : checkParagraph,
         };
-        [@"✓" drawInRect:NSMakeRect(kWCRMenuTitleMinX + titleWidth + kWCRMenuCheckGap,
-                                    kWCRMenuContentY,
+        [@"✓" drawInRect:NSMakeRect(checkX, kWCRMenuContentY,
                                     kWCRMenuCheckWidth, kWCRMenuContentHeight)
           withAttributes:checkAttributes];
     }
@@ -543,14 +617,40 @@ static BOOL WCRMenuItemChecked(NSMenuItem *item) {
     return stored ? [stored boolValue] : NO;
 }
 
+- (BOOL)voiceAutoTextEnabledForKey:(NSString *)key {
+    id stored = [[NSUserDefaults standardUserDefaults] objectForKey:key];
+    return stored ? [stored boolValue] : NO;
+}
+
+- (BOOL)voiceAutoTextPrivateEnabled {
+    return [self voiceAutoTextEnabledForKey:kWCRVoiceAutoTextPrivateEnabledKey];
+}
+
+- (BOOL)voiceAutoTextGroupEnabled {
+    return [self voiceAutoTextEnabledForKey:kWCRVoiceAutoTextGroupEnabledKey];
+}
+
+- (BOOL)voiceAutoTextIgnoreSelfEnabled {
+    return [self voiceAutoTextEnabledForKey:kWCRVoiceAutoTextIgnoreSelfEnabledKey];
+}
+
 - (BOOL)messageRepeatEnabled {
     id stored = [[NSUserDefaults standardUserDefaults] objectForKey:kWCRDefaultsKeyMessageRepeatEnabled];
+    return stored ? [stored boolValue] : NO;
+}
+
+- (BOOL)multiSelectLimitEnabled {
+    id stored = [[NSUserDefaults standardUserDefaults] objectForKey:kWCRDefaultsKeyMultiSelectLimitEnabled];
     return stored ? [stored boolValue] : NO;
 }
 
 - (BOOL)commentRepeatEnabled {
     id stored = [[NSUserDefaults standardUserDefaults] objectForKey:kWCRDefaultsKeyCommentRepeatEnabled];
     return stored ? [stored boolValue] : NO;
+}
+
+- (BOOL)messageBlockEnabled {
+    return WCRMessageBlockEnabled();
 }
 
 - (BOOL)avatarRoundEnabled {
@@ -608,8 +708,16 @@ static BOOL WCRMenuItemChecked(NSMenuItem *item) {
     [[NSUserDefaults standardUserDefaults] setBool:enabled forKey:kWCRDefaultsKeyMessageRepeatEnabled];
 }
 
+- (void)setMultiSelectLimitEnabled:(BOOL)enabled {
+    [[NSUserDefaults standardUserDefaults] setBool:enabled forKey:kWCRDefaultsKeyMultiSelectLimitEnabled];
+}
+
 - (void)setCommentRepeatEnabled:(BOOL)enabled {
     [[NSUserDefaults standardUserDefaults] setBool:enabled forKey:kWCRDefaultsKeyCommentRepeatEnabled];
+}
+
+- (void)setMessageBlockEnabled:(BOOL)enabled {
+    WCRMessageBlockSetEnabled(enabled);
 }
 
 - (void)setAvatarRoundEnabled:(BOOL)enabled {
@@ -643,14 +751,29 @@ static BOOL WCRMenuItemChecked(NSMenuItem *item) {
     return WCRVoiceForwardSupportsProfile(profile);
 }
 
+- (BOOL)currentProfileSupportsVoiceAutoText {
+    NSError *error = nil;
+    return WCRVoiceAutoTextSupportsProfile(WCRCurrentProcessProfile(&error));
+}
+
 - (BOOL)currentProfileSupportsMessageRepeat {
     NSError *error = nil;
     return WCRMessageRepeatSupportsProfile(WCRCurrentProcessProfile(&error));
 }
 
+- (BOOL)currentProfileSupportsMultiSelectLimit {
+    NSError *error = nil;
+    return WCRMultiSelectLimitSupportsProfile(WCRCurrentProcessProfile(&error));
+}
+
 - (BOOL)currentProfileSupportsCommentRepeat {
     NSError *error = nil;
     return WCRCommentRepeatSupportsProfile(WCRCurrentProcessProfile(&error));
+}
+
+- (BOOL)currentProfileSupportsMessageBlock {
+    NSError *error = nil;
+    return WCRMessageBlockSupportsProfile(WCRCurrentProcessProfile(&error));
 }
 
 - (BOOL)currentProfileSupportsGroupLeave {
@@ -728,10 +851,11 @@ static BOOL WCRMenuItemChecked(NSMenuItem *item) {
         captureReady = WCRMessageCaptureInstall(profile, error);
     }
 
-    // 当前窗口置顶：270135 的 OnSelectedSession。和收口 Hook 同一组开关
-    // （防撤回 + 原始 ID）。字节不匹配只跳过置顶，已有记录仍然保留。
+    // 当前窗口置顶：270135 的 OnSelectedSession。原始 ID 和消息屏蔽都需要
+    // 知道当前会话；消息屏蔽关闭后才允许随原始 ID 一起卸掉。
     // wechat.dylib 还没映射时跟收口 Hook 一样失败，启动重试会再装。
-    if (!originalIDNeedsCapture) {
+    BOOL sessionSelectNeeded = originalIDNeedsCapture || [self messageBlockEnabled];
+    if (!sessionSelectNeeded) {
         NSError *sessionError = nil;
         if (!WCRSessionSelectUninstall(&sessionError)) {
             if (error && !*error) *error = sessionError;
@@ -799,6 +923,22 @@ static BOOL WCRMenuItemChecked(NSMenuItem *item) {
     return WCRVoiceForwardInstall(profile, error);
 }
 
+/// 私聊或群聊任一打开就安装。两个都关才卸掉。
+/// 忽略自己发的语音由钩子每次读偏好，这里不处理。
+/// 构建没登记时安装会失败；启动重试留下偏好，菜单仍可关掉。
+- (BOOL)syncVoiceAutoText:(NSError **)error {
+    BOOL wanted = [self voiceAutoTextPrivateEnabled] || [self voiceAutoTextGroupEnabled];
+    if (!wanted) return WCRVoiceAutoTextUninstall(error);
+    if (WCRVoiceAutoTextIsInstalled()) return YES;
+    NSError *profileError = nil;
+    const WCRPatchProfile *profile = WCRCurrentProcessProfile(&profileError);
+    if (!profile) {
+        if (error) *error = profileError;
+        return NO;
+    }
+    return WCRVoiceAutoTextInstall(profile, error);
+}
+
 /// 消息复读打开时安装长按菜单 Hook；关闭时恢复原生菜单。
 /// 启动早期 wechat.dylib 还没映射时保留偏好，由启动重试补装。
 - (BOOL)syncMessageRepeat:(NSError **)error {
@@ -821,6 +961,23 @@ static BOOL WCRMenuItemChecked(NSMenuItem *item) {
     return [self syncVoiceForward:error];
 }
 
+/// 多选突破打开时改内存里的上限和转发校验；关闭时写回原指令。
+/// 启动早期 wechat.dylib 还没映射时保留偏好，由启动重试补装。
+/// 已经打开的多选面板仍拿着旧的 100，要退出重进才按新上限计。
+- (BOOL)syncMultiSelectLimit:(NSError **)error {
+    if (![self multiSelectLimitEnabled]) {
+        return WCRMultiSelectLimitUninstall(error);
+    }
+    if (WCRMultiSelectLimitIsInstalled()) return YES;
+    NSError *profileError = nil;
+    const WCRPatchProfile *profile = WCRCurrentProcessProfile(&profileError);
+    if (!profile) {
+        if (error) *error = profileError;
+        return NO;
+    }
+    return WCRMultiSelectLimitInstall(profile, error);
+}
+
 /// 朋友圈评论复读打开时安装评论菜单 Hook；关闭时恢复原生菜单。
 /// 启动早期 wechat.dylib 还没映射时保留偏好，由启动重试补装。
 - (BOOL)syncCommentRepeat:(NSError **)error {
@@ -835,6 +992,26 @@ static BOOL WCRMenuItemChecked(NSMenuItem *item) {
         return NO;
     }
     return WCRCommentRepeatInstall(profile, error);
+}
+
+/// 消息屏蔽打开时安装新消息过滤 Hook；关闭时恢复微信原生行为。
+/// 同时让会话切换钩子可用，菜单才能知道“当前会话”是哪一个。
+- (BOOL)syncMessageBlock:(NSError **)error {
+    if (![self messageBlockEnabled]) {
+        if (!WCRMessageBlockUninstall(error)) return NO;
+        return [self syncMessageCapture:error];
+    }
+
+    if (!WCRMessageBlockIsInstalled()) {
+        NSError *profileError = nil;
+        const WCRPatchProfile *profile = WCRCurrentProcessProfile(&profileError);
+        if (!profile) {
+            if (error) *error = profileError;
+            return NO;
+        }
+        if (!WCRMessageBlockInstall(profile, error)) return NO;
+    }
+    return [self syncMessageCapture:error];
 }
 
 - (WCRPatchState)currentState {
@@ -924,7 +1101,12 @@ static BOOL WCRMenuItemChecked(NSMenuItem *item) {
     if (!menu) return;
     for (NSMenuItem *item in menu.itemArray) {
         [self attachAlignedRowToItem:item];
-        if (item.submenu) [self attachAlignedRowsInMenu:item.submenu];
+    }
+    WCRAlignMenuCheckColumn(menu);
+    for (NSMenuItem *item in menu.itemArray) {
+        if (item.submenu && item.submenu != menu) {
+            [self attachAlignedRowsInMenu:item.submenu];
+        }
     }
 }
 
@@ -934,7 +1116,12 @@ static BOOL WCRMenuItemChecked(NSMenuItem *item) {
         if ([item.view isKindOfClass:[WCRPersistentMenuItemRow class]]) {
             [(WCRPersistentMenuItemRow *)item.view reflectItemState];
         }
-        if (item.submenu) [self refreshAlignedRowsInMenu:item.submenu];
+    }
+    WCRAlignMenuCheckColumn(menu);
+    for (NSMenuItem *item in menu.itemArray) {
+        if (item.submenu && item.submenu != menu) {
+            [self refreshAlignedRowsInMenu:item.submenu];
+        }
     }
 }
 
@@ -1159,12 +1346,103 @@ static BOOL WCRMenuItemChecked(NSMenuItem *item) {
                                                        action:@selector(toggleVoiceForward:)
                                                          menu:submenu];
 
+    // 父行标题和三个子开关都不同，点父行只展开。子开关各自动作，避免被收成互斥组。
+    NSMenu *voiceAutoTextMenu = [[NSMenu alloc] initWithTitle:@"语音自动转文字"];
+    voiceAutoTextMenu.delegate = self;
+    voiceAutoTextMenu.autoenablesItems = NO;
+    self.voiceAutoTextMenu = voiceAutoTextMenu;
+    self.voiceAutoTextPrivateItem =
+        [self persistentMenuItemWithTitle:@"私聊语音自动转文字"
+                                   action:@selector(toggleVoiceAutoTextPrivate:)
+                                     menu:voiceAutoTextMenu];
+    self.voiceAutoTextGroupItem =
+        [self persistentMenuItemWithTitle:@"群聊语音自动转文字"
+                                   action:@selector(toggleVoiceAutoTextGroup:)
+                                     menu:voiceAutoTextMenu];
+    [voiceAutoTextMenu addItem:[NSMenuItem separatorItem]];
+    self.voiceAutoTextIgnoreSelfItem =
+        [self persistentMenuItemWithTitle:@"忽略自己发的语音"
+                                   action:@selector(toggleVoiceAutoTextIgnoreSelf:)
+                                     menu:voiceAutoTextMenu];
+    NSMenuItem *voiceAutoTextParent = [[NSMenuItem alloc] initWithTitle:@"语音自动转文字"
+                                                                  action:nil
+                                                           keyEquivalent:@""];
+    self.voiceAutoTextParentItem = voiceAutoTextParent;
+    voiceAutoTextParent.submenu = voiceAutoTextMenu;
+    [submenu addItem:voiceAutoTextParent];
+
     self.messageRepeatItem = [self persistentMenuItemWithTitle:@"启用消息复读"
                                                         action:@selector(toggleMessageRepeat:)
                                                           menu:submenu];
-    self.commentRepeatItem = [self persistentMenuItemWithTitle:@"启用朋友圈评论复读"
+    self.multiSelectLimitItem = [self persistentMenuItemWithTitle:@"多选突破100条"
+                                                           action:@selector(toggleMultiSelectLimit:)
+                                                             menu:submenu];
+    self.commentRepeatItem = [self persistentMenuItemWithTitle:@"友圈评论复读"
                                                         action:@selector(toggleCommentRepeat:)
                                                           menu:submenu];
+
+    // 消息屏蔽：Mac 没有资料页注入点。用最近会话多选联系人和群，
+    // 再按手机版的消息类型决定丢哪些。当前会话只是快捷入口。
+    NSMenu *messageBlockMenu = [[NSMenu alloc] initWithTitle:@"启用消息屏蔽"];
+    messageBlockMenu.delegate = self;
+    messageBlockMenu.autoenablesItems = NO;
+
+    self.messageBlockItem = [self persistentMenuItemWithTitle:@"启用消息屏蔽"
+                                                       action:@selector(toggleMessageBlock:)
+                                                         menu:messageBlockMenu];
+    [messageBlockMenu addItem:[NSMenuItem separatorItem]];
+    self.messageBlockPickerItem = [[NSMenuItem alloc] initWithTitle:@"选择联系人或群…"
+                                                              action:@selector(presentMessageBlockPicker:)
+                                                       keyEquivalent:@""];
+    self.messageBlockPickerItem.target = self;
+    [messageBlockMenu addItem:self.messageBlockPickerItem];
+    self.messageBlockCurrentItem = [self persistentMenuItemWithTitle:@"屏蔽当前会话"
+                                                              action:@selector(toggleCurrentSessionMessageBlock:)
+                                                                menu:messageBlockMenu];
+
+    NSMenu *manageMenu = [[NSMenu alloc] initWithTitle:@"已屏蔽会话"];
+    manageMenu.delegate = self;
+    manageMenu.autoenablesItems = NO;
+    self.messageBlockManageMenu = manageMenu;
+    NSMenuItem *manageParent = [[NSMenuItem alloc] initWithTitle:@"已屏蔽会话"
+                                                          action:nil
+                                                   keyEquivalent:@""];
+    manageParent.submenu = manageMenu;
+    [messageBlockMenu addItem:manageParent];
+    [messageBlockMenu addItem:[NSMenuItem separatorItem]];
+
+    NSMenu *typeMenu = [[NSMenu alloc] initWithTitle:@"屏蔽类型"];
+    typeMenu.delegate = self;
+    typeMenu.autoenablesItems = NO;
+    self.messageBlockAllTypesItem = [self persistentMenuItemWithTitle:@"全类型屏蔽"
+                                                               action:@selector(toggleMessageBlockAllTypes:)
+                                                                 menu:typeMenu];
+    [typeMenu addItem:[NSMenuItem separatorItem]];
+    NSMutableArray<NSMenuItem *> *typeItems = [NSMutableArray array];
+    for (NSString *key in WCRMessageBlockAllTypeKeys()) {
+        NSMenuItem *row = [self persistentMenuItemWithTitle:WCRMessageBlockTitleForTypeKey(key)
+                                                     action:@selector(toggleMessageBlockType:)
+                                                       menu:typeMenu];
+        row.representedObject = key;
+        [typeItems addObject:row];
+    }
+    self.messageBlockTypeItems = typeItems;
+    NSMenuItem *typeParent = [[NSMenuItem alloc] initWithTitle:@"屏蔽类型"
+                                                        action:nil
+                                                 keyEquivalent:@""];
+    typeParent.submenu = typeMenu;
+    self.messageBlockTypeParentItem = typeParent;
+    [messageBlockMenu addItem:typeParent];
+    self.messageBlockShowTipItem = [self persistentMenuItemWithTitle:@"显示屏蔽提示"
+                                                              action:@selector(toggleMessageBlockShowTip:)
+                                                                menu:messageBlockMenu];
+
+    NSMenuItem *messageBlockParent = [[NSMenuItem alloc] initWithTitle:@"启用消息屏蔽"
+                                                                action:nil
+                                                         keyEquivalent:@""];
+    self.messageBlockParentItem = messageBlockParent;
+    messageBlockParent.submenu = messageBlockMenu;
+    [submenu addItem:messageBlockParent];
 
     // 圆角头像：二级菜单 = 开关 + 圆角大小预设（勾选当前档位）。
     NSMenu *avatarMenu = [[NSMenu alloc] initWithTitle:@"启用圆角头像"];
@@ -1228,6 +1506,28 @@ static BOOL WCRMenuItemChecked(NSMenuItem *item) {
     self.autoUpdateItem = [self persistentMenuItemWithTitle:@"禁用微信更新"
                                                      action:@selector(toggleAutoUpdate:)
                                                        menu:submenu];
+
+    // 其他应用：微信只列出带 zip 共享扩展的应用。勾选后为每个应用登记一个入口。
+    NSMenu *otherAppsMenu = [[NSMenu alloc] initWithTitle:@"其他应用扩展"];
+    otherAppsMenu.delegate = self;
+    otherAppsMenu.autoenablesItems = NO;
+    NSMutableArray<NSMenuItem *> *otherAppItems = [NSMutableArray array];
+    NSUInteger otherAppCount = 0;
+    const WCROtherAppSpec *otherAppSpecs = WCROtherAppSpecs(&otherAppCount);
+    for (NSUInteger index = 0; index < otherAppCount; ++index) {
+        NSMenuItem *row = [self persistentMenuItemWithTitle:otherAppSpecs[index].title
+                                                     action:@selector(toggleOtherApp:)
+                                                       menu:otherAppsMenu];
+        row.representedObject = otherAppSpecs[index].identifier;
+        [otherAppItems addObject:row];
+    }
+    self.otherAppItems = otherAppItems;
+    NSMenuItem *otherAppsParent = [[NSMenuItem alloc] initWithTitle:@"其他应用扩展"
+                                                             action:nil
+                                                      keyEquivalent:@""];
+    self.otherAppsParentItem = otherAppsParent;
+    otherAppsParent.submenu = otherAppsMenu;
+    [submenu addItem:otherAppsParent];
 
     // 配置在创建菜单时放进去。带搜索框的菜单不会显示
     // menuNeedsUpdate 里临时插入的行。
@@ -1343,6 +1643,69 @@ static BOOL WCRMenuItemChecked(NSMenuItem *item) {
         if (item.tag >= kWCRDynamicItemTag) [menu removeItem:item];
     }
 
+    if (menu == self.messageBlockManageMenu) {
+        NSArray<NSString *> *sessions = WCRMessageBlockSessions();
+        if (sessions.count == 0) {
+            NSMenuItem *empty = [[NSMenuItem alloc] initWithTitle:@"暂无已屏蔽会话"
+                                                           action:nil
+                                                    keyEquivalent:@""];
+            empty.enabled = NO;
+            empty.tag = kWCRDynamicItemTag;
+            [menu addItem:empty];
+        } else {
+            for (NSString *session in sessions) {
+                NSString *name = WCRContactNameDisplay(session);
+                if (name.length == 0) name = session;
+                NSMenu *personMenu = [[NSMenu alloc] initWithTitle:name];
+                personMenu.autoenablesItems = NO;
+                NSMenuItem *unblock = [[NSMenuItem alloc] initWithTitle:@"取消屏蔽"
+                                                                 action:@selector(unblockMessageBlockSession:)
+                                                          keyEquivalent:@""];
+                unblock.target = self;
+                unblock.representedObject = session;
+                unblock.tag = kWCRDynamicItemTag;
+                [personMenu addItem:unblock];
+                [personMenu addItem:[NSMenuItem separatorItem]];
+                NSMenuItem *follow = [self persistentMenuItemWithTitle:@"跟随全局类型"
+                                                                action:@selector(toggleMessageBlockSessionFollowGlobal:)
+                                                                  menu:personMenu];
+                follow.representedObject = session;
+                follow.tag = kWCRDynamicItemTag;
+                for (NSString *key in WCRMessageBlockAllTypeKeys()) {
+                    NSMenuItem *typeRow = [self persistentMenuItemWithTitle:WCRMessageBlockTitleForTypeKey(key)
+                                                                     action:@selector(toggleMessageBlockSessionType:)
+                                                                       menu:personMenu];
+                    typeRow.representedObject = @{@"session": session, @"type": key};
+                    typeRow.tag = kWCRDynamicItemTag;
+                }
+                [self applySessionTypeChecksInMenu:personMenu session:session];
+                NSMenuItem *parent = [[NSMenuItem alloc] initWithTitle:name
+                                                                action:nil
+                                                         keyEquivalent:@""];
+                parent.submenu = personMenu;
+                parent.representedObject = session;
+                parent.tag = kWCRDynamicItemTag;
+                BOOL custom = WCRMessageBlockSessionUsesCustomTypes(session);
+                parent.toolTip = custom
+                    ? [NSString stringWithFormat:@"%@\n单独指定类型", session]
+                    : [NSString stringWithFormat:@"%@\n跟随全局类型", session];
+                [menu addItem:parent];
+            }
+            NSMenuItem *separator = [NSMenuItem separatorItem];
+            separator.tag = kWCRDynamicItemTag;
+            [menu addItem:separator];
+            NSMenuItem *clear = [[NSMenuItem alloc] initWithTitle:@"清空屏蔽列表"
+                                                           action:@selector(clearMessageBlockSessions:)
+                                                    keyEquivalent:@""];
+            clear.target = self;
+            clear.tag = kWCRDynamicItemTag;
+            [menu addItem:clear];
+        }
+        [self attachAlignedRowsInMenu:menu];
+        [self refreshState];
+        return;
+    }
+
     // 圆角头像二级菜单：重建圆角大小预设行，勾选当前档位。
     if (menu == self.avatarSubmenu) {
         NSInteger current = WCRAvatarRoundRadiusPercent();
@@ -1451,6 +1814,22 @@ static BOOL WCRMenuItemChecked(NSMenuItem *item) {
         return;
     }
 
+    // 语音自动转文字：未登记时在子菜单里说明。这里返回，避免落到下面的主菜单提示。
+    if (menu == self.voiceAutoTextMenu) {
+        if (![self currentProfileSupportsVoiceAutoText]) {
+            NSMenuItem *hint = [[NSMenuItem alloc]
+                initWithTitle:@"当前微信版本还没有登记语音自动转文字"
+                          action:nil
+                   keyEquivalent:@""];
+            hint.enabled = NO;
+            hint.tag = kWCRDynamicItemTag;
+            [menu addItem:hint];
+        }
+        [self attachAlignedRowsInMenu:menu];
+        [self refreshState];
+        return;
+    }
+
     // 语音转发：菜单入口还没登记时置灰，并说明原因。不把项点亮。
     if (![self currentProfileSupportsVoiceForward]) {
         NSInteger voiceIndex = [menu indexOfItem:self.voiceForwardItem];
@@ -1486,6 +1865,29 @@ static BOOL WCRMenuItemChecked(NSMenuItem *item) {
     WCRScreenCaptureSetBypassEnabled(enable);
     [self refreshState];
     os_log_info(WCRLog(), "screen-capture bypass changed enabled=%{public}d", enable ? 1 : 0);
+}
+
+- (void)toggleOtherApp:(NSMenuItem *)sender {
+    NSString *identifier = [sender.representedObject isKindOfClass:[NSString class]]
+        ? sender.representedObject : nil;
+    const WCROtherAppSpec *spec = WCROtherAppSpecForIdentifier(identifier);
+    if (!spec || !WCROtherAppIsInstalled(spec)) return;
+    BOOL enable = !WCRMenuItemChecked(sender);
+    if (!WCROtherAppsHostInstalled()) {
+        NSMenu *root = sender.menu;
+        while (root.supermenu) root = root.supermenu;
+        if (root) [root cancelTracking];
+        NSError *error = [NSError errorWithDomain:@"com.wcrefine.mac.other-apps"
+                                              code:1
+                                          userInfo:@{NSLocalizedDescriptionKey :
+                                              @"其他应用扩展还没安装。请重新覆盖安装 WCRefine。"}];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self showFailureTitle:@"无法加入其他应用" error:error];
+        });
+        return;
+    }
+    WCROtherAppSetEnabled(spec, enable);
+    [self refreshState];
 }
 
 - (void)toggleAutoUpdate:(NSMenuItem *)sender {
@@ -1671,15 +2073,105 @@ static BOOL WCRMenuItemChecked(NSMenuItem *item) {
     self.voiceForwardItem.state = [self voiceForwardEnabled] ? NSControlStateValueOn : NSControlStateValueOff;
     // 语音转发独立于防撤回。只看当前构建有没有登记气泡菜单入口。
     self.voiceForwardItem.enabled = [self currentProfileSupportsVoiceForward];
+    BOOL supportsVoiceAutoText = [self currentProfileSupportsVoiceAutoText];
+    BOOL voiceAutoPrivateOn = [self voiceAutoTextPrivateEnabled];
+    BOOL voiceAutoGroupOn = [self voiceAutoTextGroupEnabled];
+    BOOL voiceAutoIgnoreOn = [self voiceAutoTextIgnoreSelfEnabled];
+    NSString *voiceAutoUnsupported = @"当前微信版本还没有登记语音自动转文字";
+    self.voiceAutoTextPrivateItem.state = voiceAutoPrivateOn
+        ? NSControlStateValueOn : NSControlStateValueOff;
+    self.voiceAutoTextGroupItem.state = voiceAutoGroupOn
+        ? NSControlStateValueOn : NSControlStateValueOff;
+    self.voiceAutoTextIgnoreSelfItem.state = voiceAutoIgnoreOn
+        ? NSControlStateValueOn : NSControlStateValueOff;
+    // 未登记时置灰。已经打开的仍可点，方便关掉写不进去的钩子。
+    self.voiceAutoTextPrivateItem.enabled = supportsVoiceAutoText || voiceAutoPrivateOn;
+    self.voiceAutoTextGroupItem.enabled = supportsVoiceAutoText || voiceAutoGroupOn;
+    self.voiceAutoTextIgnoreSelfItem.enabled = supportsVoiceAutoText || voiceAutoIgnoreOn;
+    self.voiceAutoTextPrivateItem.toolTip = supportsVoiceAutoText
+        ? @"私聊语音自动使用微信的「转文字」"
+        : voiceAutoUnsupported;
+    self.voiceAutoTextGroupItem.toolTip = supportsVoiceAutoText
+        ? @"群聊语音自动使用微信的「转文字」"
+        : voiceAutoUnsupported;
+    self.voiceAutoTextIgnoreSelfItem.toolTip = supportsVoiceAutoText
+        ? @"打开后，自己发出的语音不会自动转文字"
+        : voiceAutoUnsupported;
+    self.voiceAutoTextParentItem.state = (voiceAutoPrivateOn || voiceAutoGroupOn)
+        ? NSControlStateValueOn : NSControlStateValueOff;
+    self.voiceAutoTextParentItem.enabled = supportsVoiceAutoText || voiceAutoPrivateOn ||
+                                            voiceAutoGroupOn || voiceAutoIgnoreOn;
+    self.voiceAutoTextParentItem.toolTip = supportsVoiceAutoText
+        ? @"收到语音后，自动使用微信的「转文字」"
+        : voiceAutoUnsupported;
     BOOL supportsMessageRepeat = [self currentProfileSupportsMessageRepeat];
     self.messageRepeatItem.state = (supportsMessageRepeat && [self messageRepeatEnabled])
         ? NSControlStateValueOn : NSControlStateValueOff;
     // 复读依赖已登记构建的长按菜单收口和动作对象布局；未登记构建置灰。
     self.messageRepeatItem.enabled = supportsMessageRepeat;
+    BOOL supportsMultiSelect = [self currentProfileSupportsMultiSelectLimit];
+    self.multiSelectLimitItem.state = (supportsMultiSelect && [self multiSelectLimitEnabled])
+        ? NSControlStateValueOn : NSControlStateValueOff;
+    self.multiSelectLimitItem.enabled = supportsMultiSelect;
+    self.multiSelectLimitItem.toolTip = supportsMultiSelect
+        ? @"可以选择并转发超过 100 条。提示和条数判断不再读对象里旧的 100。"
+        : @"当前微信版本还不支持多选突破 100 条";
     BOOL supportsCommentRepeat = [self currentProfileSupportsCommentRepeat];
     self.commentRepeatItem.state = (supportsCommentRepeat && [self commentRepeatEnabled])
         ? NSControlStateValueOn : NSControlStateValueOff;
     self.commentRepeatItem.enabled = supportsCommentRepeat;
+
+    BOOL supportsMessageBlock = [self currentProfileSupportsMessageBlock];
+    BOOL messageBlockOn = [self messageBlockEnabled];
+    self.messageBlockItem.state = messageBlockOn
+        ? NSControlStateValueOn : NSControlStateValueOff;
+    self.messageBlockItem.enabled = supportsMessageBlock || messageBlockOn;
+    self.messageBlockParentItem.state = self.messageBlockItem.state;
+    self.messageBlockParentItem.enabled = supportsMessageBlock || messageBlockOn;
+    NSString *frontSession = WCROriginalIDFrontValue();
+    BOOL frontBlocked = frontSession.length > 0 &&
+                        WCRMessageBlockIsSessionBlocked(frontSession);
+    self.messageBlockCurrentItem.state = frontBlocked
+        ? NSControlStateValueOn : NSControlStateValueOff;
+    self.messageBlockCurrentItem.enabled = supportsMessageBlock && messageBlockOn &&
+                                            frontSession.length > 0;
+    self.messageBlockPickerItem.enabled = supportsMessageBlock;
+    NSUInteger blockedCount = WCRMessageBlockSessions().count;
+    self.messageBlockPickerItem.toolTip = blockedCount == 0
+        ? @"从最近会话里勾选联系人或群，也可以手填用户名"
+        : [NSString stringWithFormat:@"已屏蔽 %lu 个会话", (unsigned long)blockedCount];
+    BOOL allMessageTypes = WCRMessageBlockSelectedTypes().count == 0;
+    self.messageBlockAllTypesItem.state = allMessageTypes
+        ? NSControlStateValueOn : NSControlStateValueOff;
+    self.messageBlockAllTypesItem.enabled = supportsMessageBlock;
+    NSArray<NSString *> *selectedTypes = WCRMessageBlockSelectedTypes();
+    for (NSMenuItem *row in self.messageBlockTypeItems) {
+        NSString *key = [row.representedObject isKindOfClass:[NSString class]]
+            ? row.representedObject : @"";
+        BOOL typeOn = allMessageTypes || [selectedTypes containsObject:key];
+        row.state = typeOn ? NSControlStateValueOn : NSControlStateValueOff;
+        row.enabled = supportsMessageBlock;
+    }
+    self.messageBlockTypeParentItem.enabled = supportsMessageBlock;
+    self.messageBlockTypeParentItem.toolTip =
+        [NSString stringWithFormat:@"当前：%@。单独指定的人在「已屏蔽会话」里改。",
+            WCRMessageBlockTypeSummary()];
+    self.messageBlockShowTipItem.state = WCRMessageBlockShowTip()
+        ? NSControlStateValueOn : NSControlStateValueOff;
+    self.messageBlockShowTipItem.enabled = supportsMessageBlock;
+    self.messageBlockShowTipItem.toolTip = WCRMessageBlockShowTip()
+        ? @"被屏蔽的消息会变成一条灰字提示，写进这个会话。"
+        : @"关闭时直接丢掉，会话里不留痕迹。";
+    if (frontSession.length == 0) {
+        self.messageBlockCurrentItem.title = @"屏蔽当前会话（未选择）";
+        self.messageBlockCurrentItem.toolTip = @"先打开一个联系人或群聊";
+    } else {
+        NSString *frontName = WCRContactNameDisplay(frontSession);
+        if (frontName.length == 0) frontName = frontSession;
+        self.messageBlockCurrentItem.title = @"屏蔽当前会话";
+        self.messageBlockCurrentItem.toolTip = [NSString stringWithFormat:
+            @"%@\n%@", frontName, frontSession];
+    }
     self.avatarToggleItem.state = [self avatarRoundEnabled] ? NSControlStateValueOn : NSControlStateValueOff;
     // 容器行也要反映开关状态（用户期望：开启即打勾）。
     self.avatarParentItem.state = [self avatarRoundEnabled] ? NSControlStateValueOn : NSControlStateValueOff;
@@ -1742,7 +2234,41 @@ static BOOL WCRMenuItemChecked(NSMenuItem *item) {
         }
         self.petHueSwatch.fillColor = WCRFloatingIDHueColor(hue);
     }
+    // 其他应用的对号在跟踪结束后再写。reflect 会按 item.state 覆盖，
+    // 而跟踪期间系统会把刚写上的 state 拨回去，点了就像没反应。
     [self refreshPersistentMenuItemViews];
+    [self refreshOtherApps];
+}
+
+- (void)refreshOtherApps {
+    for (NSMenuItem *row in self.otherAppItems) {
+        NSString *identifier = [row.representedObject isKindOfClass:[NSString class]]
+            ? row.representedObject : nil;
+        const WCROtherAppSpec *spec = WCROtherAppSpecForIdentifier(identifier);
+        if (!spec) continue;
+        BOOL installed = WCROtherAppIsInstalled(spec);
+        BOOL on = installed && WCROtherAppEnabled(spec);
+        // 不写 row.state。菜单跟踪里系统会把这次赋值拨回打开前的值，
+        // 随后 reflect 再抄回来，新勾上的一行就一直是空的。
+        if ([row.view isKindOfClass:[WCRPersistentMenuItemRow class]]) {
+            WCRPersistentMenuItemRow *view = (WCRPersistentMenuItemRow *)row.view;
+            view.checked = on;
+            [view setNeedsDisplay:YES];
+            [view displayIfNeeded];
+        }
+        row.enabled = installed;
+        row.toolTip = WCROtherAppTooltip(spec);
+    }
+    self.otherAppsParentItem.enabled = YES;
+    self.otherAppsParentItem.toolTip = @"把勾选的应用加进微信转发里的「其他应用」。";
+    NSError *syncError = nil;
+    if (![self WCR_syncOtherApps:&syncError] && syncError) {
+        os_log_error(WCRLog(), "other apps sync: %{public}@", syncError.localizedDescription);
+    }
+}
+
+- (BOOL)WCR_syncOtherApps:(NSError **)error {
+    return WCROtherAppsRequestSyncIfSelectionChanged(error);
 }
 
 - (void)showFailureTitle:(NSString *)title error:(NSError *)error {
@@ -2027,6 +2553,56 @@ static BOOL WCRMenuItemChecked(NSMenuItem *item) {
     os_log_info(WCRLog(), "voice forward changed enabled=%{public}d", enable ? 1 : 0);
 }
 
+- (void)setVoiceAutoTextEnabled:(BOOL)enabled forKey:(NSString *)key {
+    [[NSUserDefaults standardUserDefaults] setBool:enabled forKey:key];
+}
+
+- (void)toggleVoiceAutoTextKey:(NSString *)key
+                        sender:(NSMenuItem *)sender
+                     onFailure:(NSString *)onFailure
+                    offFailure:(NSString *)offFailure {
+    BOOL enable = !WCRMenuItemChecked(sender);
+    [self setVoiceAutoTextEnabled:enable forKey:key];
+    NSError *error = nil;
+    BOOL ok = [self syncVoiceAutoText:&error];
+    if (!ok) {
+        NSString *message = error.localizedDescription ?: @"";
+        BOOL pending = [message containsString:@"尚未加载"];
+        if (enable && !pending) {
+            [self setVoiceAutoTextEnabled:NO forKey:key];
+            [self syncVoiceAutoText:nil];
+            [self showFailureTitle:onFailure error:error];
+        } else if (!enable) {
+            [self setVoiceAutoTextEnabled:YES forKey:key];
+            [self showFailureTitle:offFailure error:error];
+        }
+    }
+    [self refreshState];
+    os_log_info(WCRLog(), "voice auto text %{public}@ enabled=%{public}d ok=%{public}d",
+                key, enable ? 1 : 0, ok ? 1 : 0);
+}
+
+- (void)toggleVoiceAutoTextPrivate:(NSMenuItem *)sender {
+    [self toggleVoiceAutoTextKey:kWCRVoiceAutoTextPrivateEnabledKey
+                          sender:sender
+                       onFailure:@"无法开启私聊语音自动转文字"
+                      offFailure:@"无法关闭私聊语音自动转文字"];
+}
+
+- (void)toggleVoiceAutoTextGroup:(NSMenuItem *)sender {
+    [self toggleVoiceAutoTextKey:kWCRVoiceAutoTextGroupEnabledKey
+                          sender:sender
+                       onFailure:@"无法开启群聊语音自动转文字"
+                      offFailure:@"无法关闭群聊语音自动转文字"];
+}
+
+- (void)toggleVoiceAutoTextIgnoreSelf:(NSMenuItem *)sender {
+    BOOL enable = !WCRMenuItemChecked(sender);
+    [self setVoiceAutoTextEnabled:enable forKey:kWCRVoiceAutoTextIgnoreSelfEnabledKey];
+    [self refreshState];
+    os_log_info(WCRLog(), "voice auto text ignore-self enabled=%{public}d", enable ? 1 : 0);
+}
+
 - (void)toggleMessageRepeat:(NSMenuItem *)sender {
     BOOL enable = !WCRMenuItemChecked(sender);
     [self setMessageRepeatEnabled:enable];
@@ -2049,6 +2625,27 @@ static BOOL WCRMenuItemChecked(NSMenuItem *item) {
     os_log_info(WCRLog(), "message repeat changed enabled=%{public}d", enable ? 1 : 0);
 }
 
+- (void)toggleMultiSelectLimit:(NSMenuItem *)sender {
+    BOOL enable = !WCRMenuItemChecked(sender);
+    [self setMultiSelectLimitEnabled:enable];
+    NSError *error = nil;
+    BOOL ok = [self syncMultiSelectLimit:&error];
+    if (!ok) {
+        NSString *message = error.localizedDescription ?: @"";
+        BOOL pending = [message containsString:@"尚未加载"];
+        if (enable && !pending) {
+            [self setMultiSelectLimitEnabled:NO];
+            [self syncMultiSelectLimit:nil];
+            [self showFailureTitle:@"无法开启多选突破" error:error];
+        } else if (!enable) {
+            [self setMultiSelectLimitEnabled:YES];
+            [self showFailureTitle:@"无法关闭多选突破" error:error];
+        }
+    }
+    [self refreshState];
+    os_log_info(WCRLog(), "multi-select limit changed enabled=%{public}d", enable ? 1 : 0);
+}
+
 - (void)toggleCommentRepeat:(NSMenuItem *)sender {
     BOOL enable = !WCRMenuItemChecked(sender);
     [self setCommentRepeatEnabled:enable];
@@ -2060,14 +2657,198 @@ static BOOL WCRMenuItemChecked(NSMenuItem *item) {
         if (enable && !pending) {
             [self setCommentRepeatEnabled:NO];
             [self syncCommentRepeat:nil];
-            [self showFailureTitle:@"无法开启朋友圈评论复读" error:error];
+            [self showFailureTitle:@"无法开启友圈评论复读" error:error];
         } else if (!enable) {
             [self setCommentRepeatEnabled:YES];
-            [self showFailureTitle:@"无法关闭朋友圈评论复读" error:error];
+            [self showFailureTitle:@"无法关闭友圈评论复读" error:error];
         }
     }
     [self refreshState];
     os_log_info(WCRLog(), "comment repeat changed enabled=%{public}d", enable ? 1 : 0);
+}
+
+- (void)toggleMessageBlock:(NSMenuItem *)sender {
+    BOOL enable = !WCRMenuItemChecked(sender);
+    [self setMessageBlockEnabled:enable];
+    NSError *error = nil;
+    BOOL ok = [self syncMessageBlock:&error];
+    if (!ok) {
+        NSString *message = error.localizedDescription ?: @"";
+        BOOL pending = [message containsString:@"尚未加载"];
+        if (enable && !pending) {
+            [self setMessageBlockEnabled:NO];
+            [self syncMessageBlock:nil];
+            [self showFailureTitle:@"无法开启消息屏蔽" error:error];
+        } else if (!enable) {
+            [self setMessageBlockEnabled:YES];
+            [self syncMessageBlock:nil];
+            [self showFailureTitle:@"无法关闭消息屏蔽" error:error];
+        }
+    }
+    [self refreshState];
+    os_log_info(WCRLog(), "message block changed enabled=%{public}d", enable ? 1 : 0);
+}
+
+- (void)presentMessageBlockPicker:(id)sender {
+    (void)sender;
+    WCRMessageBlockPresentPicker();
+}
+
+- (void)toggleMessageBlockAllTypes:(NSMenuItem *)sender {
+    if (WCRMenuItemChecked(sender)) {
+        WCRMessageBlockSetSelectedTypes(@[kWCRMessageBlockTypeText]);
+    } else {
+        WCRMessageBlockSetSelectedTypes(@[]);
+    }
+    WCRConfigStoreBumpRevision();
+    [self refreshState];
+}
+
+- (void)toggleMessageBlockType:(NSMenuItem *)sender {
+    NSString *key = [sender.representedObject isKindOfClass:[NSString class]]
+        ? sender.representedObject : @"";
+    if (key.length == 0) return;
+    BOOL turnOn = !WCRMenuItemChecked(sender);
+    NSMutableArray<NSString *> *selected = [WCRMessageBlockSelectedTypes() mutableCopy];
+    if (selected.count == 0) selected = [WCRMessageBlockAllTypeKeys() mutableCopy];
+    if (turnOn) {
+        if (![selected containsObject:key]) [selected addObject:key];
+    } else {
+        [selected removeObject:key];
+    }
+    WCRMessageBlockSetSelectedTypes(selected);
+    WCRConfigStoreBumpRevision();
+    [self refreshState];
+}
+
+- (void)toggleCurrentSessionMessageBlock:(NSMenuItem *)sender {
+    (void)sender;
+    if (![self messageBlockEnabled]) {
+        NSAlert *alert = [[NSAlert alloc] init];
+        alert.alertStyle = NSAlertStyleInformational;
+        alert.messageText = @"先启用消息屏蔽";
+        alert.informativeText = @"先打开「启用消息屏蔽」，再选择要屏蔽的会话。";
+        [alert runModal];
+        return;
+    }
+    NSString *session = WCROriginalIDFrontValue();
+    if (session.length == 0) {
+        NSAlert *alert = [[NSAlert alloc] init];
+        alert.alertStyle = NSAlertStyleInformational;
+        alert.messageText = @"当前没有打开的聊天";
+        alert.informativeText = @"先打开要屏蔽的联系人或群，再回来点这一项。";
+        [alert runModal];
+        return;
+    }
+    BOOL blocked = WCRMessageBlockIsSessionBlocked(session);
+    if (!WCRMessageBlockSetSessionBlocked(session, !blocked)) {
+        [self showFailureTitle:@"无法保存消息屏蔽设置"
+                         error:[NSError errorWithDomain:@"WCRefineMac.MessageBlock"
+                                                   code:2
+                                               userInfo:@{NSLocalizedDescriptionKey:
+                                                   @"会话 ID 无效，或屏蔽列表已达到上限。"}]];
+        return;
+    }
+    WCRConfigStoreBumpRevision();
+    [self refreshState];
+    os_log_info(WCRLog(), "message block session changed blocked=%{public}d", blocked ? 0 : 1);
+}
+
+- (void)applySessionTypeChecksInMenu:(NSMenu *)menu session:(NSString *)session {
+    BOOL custom = WCRMessageBlockSessionUsesCustomTypes(session);
+    NSArray<NSString *> *customTypes = custom ? WCRMessageBlockCustomTypesForSession(session) : nil;
+    BOOL globalAll = WCRMessageBlockSelectedTypes().count == 0;
+    NSArray<NSString *> *globalTypes = WCRMessageBlockSelectedTypes();
+    for (NSMenuItem *item in menu.itemArray) {
+        if (item.action == @selector(toggleMessageBlockSessionFollowGlobal:)) {
+            item.state = custom ? NSControlStateValueOff : NSControlStateValueOn;
+        } else if (item.action == @selector(toggleMessageBlockSessionType:)) {
+            NSString *key = [item.representedObject isKindOfClass:[NSDictionary class]]
+                ? item.representedObject[@"type"] : @"";
+            BOOL on = custom ? [customTypes containsObject:key]
+                             : (globalAll || [globalTypes containsObject:key]);
+            item.state = on ? NSControlStateValueOn : NSControlStateValueOff;
+        } else {
+            continue;
+        }
+        if ([item.view isKindOfClass:[WCRPersistentMenuItemRow class]]) {
+            [(WCRPersistentMenuItemRow *)item.view reflectItemState];
+        }
+    }
+}
+
+- (void)unblockMessageBlockSession:(NSMenuItem *)sender {
+    NSString *session = [sender.representedObject isKindOfClass:[NSString class]]
+        ? sender.representedObject : @"";
+    if (session.length == 0) return;
+    if (!WCRMessageBlockSetSessionBlocked(session, NO)) {
+        [self showFailureTitle:@"无法取消屏蔽"
+                         error:[NSError errorWithDomain:@"WCRefineMac.MessageBlock"
+                                                   code:2
+                                               userInfo:@{NSLocalizedDescriptionKey:
+                                                   @"这个会话没有从名单里去掉。"}]];
+        return;
+    }
+    WCRConfigStoreBumpRevision();
+    [self refreshState];
+}
+
+- (void)toggleMessageBlockSessionFollowGlobal:(NSMenuItem *)sender {
+    NSString *session = [sender.representedObject isKindOfClass:[NSString class]]
+        ? sender.representedObject : @"";
+    if (session.length == 0) return;
+    if (WCRMessageBlockSessionUsesCustomTypes(session)) {
+        WCRMessageBlockSetCustomTypesForSession(session, nil);
+        WCRConfigStoreBumpRevision();
+    }
+    [self applySessionTypeChecksInMenu:sender.menu session:session];
+}
+
+- (void)toggleMessageBlockSessionType:(NSMenuItem *)sender {
+    NSDictionary *info = [sender.representedObject isKindOfClass:[NSDictionary class]]
+        ? sender.representedObject : nil;
+    NSString *session = [info[@"session"] isKindOfClass:[NSString class]] ? info[@"session"] : @"";
+    NSString *key = [info[@"type"] isKindOfClass:[NSString class]] ? info[@"type"] : @"";
+    if (session.length == 0 || key.length == 0) return;
+    BOOL turnOn = !WCRMenuItemChecked(sender);
+    NSMutableArray<NSString *> *selected = nil;
+    if (WCRMessageBlockSessionUsesCustomTypes(session)) {
+        selected = [WCRMessageBlockCustomTypesForSession(session) mutableCopy] ?: [NSMutableArray array];
+    } else if (WCRMessageBlockSelectedTypes().count == 0) {
+        selected = [WCRMessageBlockAllTypeKeys() mutableCopy];
+    } else {
+        selected = [WCRMessageBlockSelectedTypes() mutableCopy];
+    }
+    if (turnOn) {
+        if (![selected containsObject:key]) [selected addObject:key];
+    } else {
+        [selected removeObject:key];
+    }
+    WCRMessageBlockSetCustomTypesForSession(session, selected);
+    WCRConfigStoreBumpRevision();
+    [self applySessionTypeChecksInMenu:sender.menu session:session];
+}
+
+- (void)toggleMessageBlockShowTip:(NSMenuItem *)sender {
+    WCRMessageBlockSetShowTip(!WCRMenuItemChecked(sender));
+    WCRConfigStoreBumpRevision();
+    [self refreshState];
+}
+
+- (void)clearMessageBlockSessions:(id)sender {
+    (void)sender;
+    if (WCRMessageBlockSessions().count == 0) return;
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.alertStyle = NSAlertStyleWarning;
+    alert.messageText = @"清空消息屏蔽列表？";
+    alert.informativeText = @"会取消所有联系人和群的屏蔽；已经收到的消息不会恢复。";
+    [alert addButtonWithTitle:@"清空"];
+    [alert addButtonWithTitle:@"取消"];
+    if ([alert runModal] != NSAlertFirstButtonReturn) return;
+    WCRMessageBlockClearSessions();
+    WCRConfigStoreBumpRevision();
+    [self refreshState];
+    os_log_info(WCRLog(), "message block sessions cleared");
 }
 
 - (void)toggleAvatarRound:(NSMenuItem *)sender {
@@ -2282,10 +3063,16 @@ static BOOL WCRApplyStartupMode(NSError **error) {
     [gMenuController syncAvatarRound:nil];
     // 语音转发开着就安装菜单入口。失败不清偏好。
     [gMenuController syncVoiceForward:nil];
+    // 私聊或群聊语音自动转文字开着就安装。失败不清偏好。
+    [gMenuController syncVoiceAutoText:nil];
     // 消息复读默认关闭；开启后安装长按菜单 Hook。失败不清偏好。
     [gMenuController syncMessageRepeat:nil];
+    // 多选突破默认关闭；开启后把 100 条上限和转发校验改掉。失败不清偏好。
+    [gMenuController syncMultiSelectLimit:nil];
     // 朋友圈评论复读默认关闭；开启后安装评论菜单 Hook。失败不清偏好。
     [gMenuController syncCommentRepeat:nil];
+    // 消息屏蔽默认关闭；开启后在新消息入库前过滤命中的会话。
+    [gMenuController syncMessageBlock:nil];
     // wechat.dylib 可能晚于插件加载；映射后再补开悬浮按钮。
     if ([gMenuController originalIDEnabled] && [gMenuController floatingIDEnabled] &&
         [gMenuController currentProfileSupportsOriginalID]) {
@@ -2320,8 +3107,14 @@ static void WCRScheduleStartup(void) {
 
 static void WCRImageAdded(const struct mach_header *header, intptr_t slide) {
     // wechat.dylib 可能晚于插件加载。映射后再补装依赖它的功能。
-    (void)header;
+    // 语音气泡在启动同一轮就会刷新。若把钩子再丢回主队列，会话先画完，
+    // 已经出现的未读语音不会再进 SetState。wechat.dylib 刚映射时同步装上。
     (void)slide;
+    Dl_info image;
+    if (gMenuController && header && dladdr(header, &image) && image.dli_fname &&
+        strstr(image.dli_fname, "/wechat.dylib")) {
+        [gMenuController syncVoiceAutoText:nil];
+    }
     dispatch_async(dispatch_get_main_queue(), ^{
         NSError *error = nil;
         if (!WCRApplyStartupMode(&error)) {
