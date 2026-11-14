@@ -1161,10 +1161,10 @@ static BOOL WCRMenuItemChecked(NSMenuItem *item) {
     submenu.autoenablesItems = NO;
 
     // 防撤回：二级菜单收纳主开关与提示子选项，顶层保持一行。
-    NSMenu *antiRevokeMenu = [[NSMenu alloc] initWithTitle:@"启用消息防撤回"];
+    NSMenu *antiRevokeMenu = [[NSMenu alloc] initWithTitle:@"消息防止撤回"];
     antiRevokeMenu.delegate = self;
 
-    self.toggleItem = [self persistentMenuItemWithTitle:@"启用消息防撤回"
+    self.toggleItem = [self persistentMenuItemWithTitle:@"消息防止撤回"
                                                  action:@selector(toggleAntiRevoke:)
                                                    menu:antiRevokeMenu];
 
@@ -1228,7 +1228,7 @@ static BOOL WCRMenuItemChecked(NSMenuItem *item) {
     self.recallNotifyContactsPickerItem.target = self;
     [antiRevokeMenu addItem:self.recallNotifyContactsPickerItem];
 
-    NSMenuItem *antiRevokeParent = [[NSMenuItem alloc] initWithTitle:@"启用消息防撤回"
+    NSMenuItem *antiRevokeParent = [[NSMenuItem alloc] initWithTitle:@"消息防止撤回"
                                                               action:nil
                                                        keyEquivalent:@""];
     self.antiRevokeParentItem = antiRevokeParent;
