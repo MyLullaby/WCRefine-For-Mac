@@ -24,7 +24,8 @@
 // 群系统事件经过同一收口时有三种形态：10000 是灰字提示（「张三退出了群聊」），
 // 10002 是原始 sysmsg XML（delchatroommember / sysmsgtemplate），49 是部分群
 // 机器人/群助手发出的退群通知 appmsg。只认前两种时，实测的「检测到 F 退出本群」
-// 会直接被丢掉。三条都会显示，所以同一个人短时间里只保留第一条，后面的收掉。
+// 会直接被丢掉。三条都会显示，所以同一个人短时间里只保留第一条。
+// 后面的明文收成空格；XML 保持原样，也不改消息类型。
 // 内容仍必须像退群，普通聊天和撤回 XML 排除。
 //
 // 认出来之后改写正文：有用户名时换成和进群提示一样的 sysmsgtemplate，
@@ -777,12 +778,73 @@ void ApplyPreferredNicknames(std::string *xml) {
     }
 }
 
+// 微信把正文放进 JSON 时用严格 UTF-8，遇到坏字节会抛 type_error.316 且无人捕获。
+bool ValidUTF8(const std::string &value) {
+    const auto *bytes = reinterpret_cast<const unsigned char *>(value.data());
+    size_t index = 0;
+    while (index < value.size()) {
+        unsigned char lead = bytes[index];
+        size_t need = 1;
+        uint32_t codepoint = lead;
+        if (lead <= 0x7F) {
+            index++;
+            continue;
+        } else if ((lead & 0xE0) == 0xC0 && lead >= 0xC2) {
+            need = 2;
+            codepoint = lead & 0x1F;
+        } else if ((lead & 0xF0) == 0xE0) {
+            need = 3;
+            codepoint = lead & 0x0F;
+        } else if ((lead & 0xF8) == 0xF0 && lead <= 0xF4) {
+            need = 4;
+            codepoint = lead & 0x07;
+        } else {
+            return false;
+        }
+        if (index + need > value.size()) return false;
+        for (size_t extra = 1; extra < need; extra++) {
+            unsigned char cont = bytes[index + extra];
+            if ((cont & 0xC0) != 0x80) return false;
+            codepoint = (codepoint << 6) | (cont & 0x3F);
+        }
+        if (need == 3 && (codepoint < 0x800 || (codepoint >= 0xD800 && codepoint <= 0xDFFF))) {
+            return false;
+        }
+        if (need == 4 && (codepoint < 0x10000 || codepoint > 0x10FFFF)) return false;
+        index += need;
+    }
+    return true;
+}
+
+std::string UTF8Safe(const std::string &value) {
+    if (ValidUTF8(value)) return value;
+    std::string out;
+    out.reserve(value.size());
+    size_t index = 0;
+    const auto *bytes = reinterpret_cast<const unsigned char *>(value.data());
+    while (index < value.size()) {
+        size_t remain = value.size() - index;
+        for (size_t length = std::min<size_t>(remain, 4); length > 0; length--) {
+            std::string piece(reinterpret_cast<const char *>(bytes + index), length);
+            if (ValidUTF8(piece) && (length == 1 || static_cast<unsigned char>(piece[0]) >= 0x80)) {
+                out += piece;
+                index += length;
+                break;
+            }
+            if (length == 1) index++;
+        }
+    }
+    return out;
+}
+
 std::string MemberListXML(const std::vector<Member> &members) {
     std::string xml;
     for (const auto &member : members) {
         if (!MemberLinkable(member)) continue;
-        std::string name = member.name.empty() ? member.id : member.name;
-        xml += "<member><username><![CDATA[" + EscapeCDATA(member.id) +
+        std::string id = UTF8Safe(member.id);
+        std::string name = UTF8Safe(member.name.empty() ? member.id : member.name);
+        if (id.empty() || name.empty()) continue;
+        xml += "<member><username><![CDATA[" + EscapeCDATA(id) +
                "]]></username><nickname><![CDATA[" + EscapeCDATA(name) +
                "]]></nickname></member>";
     }
@@ -834,15 +896,17 @@ std::string EnsureSessionPrefix(const std::string &xml, const std::string &group
 
 std::string RenderedPayload(const std::string &content, const GroupLeaveEvent &event) {
     std::string token;
-    bool canLink = false;
+    // 一条资料链接只放一个人。多人塞进同一个 link_profile 时，后面的 JSON 编码会崩。
+    int linkableCount = 0;
     for (const auto &member : event.members) {
-        if (MemberLinkable(member)) canLink = true;
+        if (MemberLinkable(member)) linkableCount++;
     }
+    bool canLink = linkableCount == 1;
     if (canLink) {
         token = ProfileLinkToken(content);
         if (!ValidToken(token)) token = "leaver";
     }
-    std::string nameForTemplate = canLink ? ("$" + token + "$") : event.who;
+    std::string nameForTemplate = canLink ? ("$" + token + "$") : UTF8Safe(event.who);
     std::string body = RenderLeaveTemplate(nameForTemplate, event.timeText, event.whoID,
                                            event.groupID, true);
     if (body.empty()) return content;
@@ -894,11 +958,12 @@ void CollectLeaveSlots(const uint8_t *base, uint32_t messageType, std::vector<Le
 }
 
 void AssignLeaveText(void *slot, const std::string &value) {
-    if (!slot || value.empty()) return;
+    std::string safe = UTF8Safe(value);
+    if (!slot || safe.empty()) return;
     if (!IsAddressRangeReadable(slot, sizeof(std::string))) return;
     auto *text = reinterpret_cast<std::string *>(slot);
     if (text->find(kLeaveSentinel) != std::string::npos) return;
-    text->assign(value);
+    text->assign(safe);
 }
 
 bool AssignFromUser(void *message, const std::string &groupID) {
@@ -1026,20 +1091,21 @@ bool ClaimLeaveNotice(const GroupLeaveEvent &event, double now) {
     return true;
 }
 
-// 重复的那条改成普通灰字，只留零宽哨兵。
-// 不能写成空的 tmpl_type_profile：微信渲染资料链接时会去读一条空记录的 +0x1c4，直接闪退。
-void HideDuplicateLeave(void *message, uint32_t messageType,
-                        const std::vector<LeaveSlot> &slots,
-                        const std::string &groupID) {
-    const std::string hidden(kLeaveSentinel);
+// 重复的明文改成一长段空格。短于 23 字节会落进短字符串，微信再按严格 UTF-8
+// 编 JSON 时会读到尾部垃圾并抛出未捕获的 type_error.316。
+// 不改消息类型，也不改 XML：10002 被换成非 XML 后，解析器同样会抛异常。
+std::string HiddenLeaveText() {
+    std::string hidden(24, ' ');
+    hidden += kLeaveSentinel;
+    return hidden;
+}
+
+void HideDuplicateLeave(const std::vector<LeaveSlot> &slots) {
+    const std::string hidden = HiddenLeaveText();
     for (const auto &slot : slots) {
         if (AlreadyRewritten(slot.text) || !LooksLikeGroupLeave(slot.text)) continue;
+        if (slot.text.find('<') != std::string::npos) continue;
         AssignLeaveText(slot.address, hidden);
-    }
-    // 10002 / 49 还会按 XML 再解析。收成 10000 纯文本，解析器碰不到资料链接。
-    if (messageType != kSystemTipType) {
-        AssignMessageType(message, kSystemTipType);
-        if (messageType == kAppMessageType) AssignFromUser(message, groupID);
     }
 }
 
@@ -1047,7 +1113,7 @@ void HideDuplicateLeave(void *message, uint32_t messageType,
 
 // 捕获点观察者回调：每条进入收口函数的消息都会经过这里。先认 10000/10002/49，
 // 再认退群文案。灰字每次都改，除非正文里已经有哨兵。同一群同一成员 60 秒内
-// 只保留第一条，后面的灰字、XML 和群助手卡片收成普通灰字。
+// 只保留第一条。后面的明文灰字收成空格，XML 和群助手卡片不再改写。
 // 任何异常都必须吞掉——绝不能让解析器带病运行。
 extern "C" void WCRGroupLeaveOnMessage(const void *message) {
     if (!message || !gEnabled.load()) return;
@@ -1102,8 +1168,7 @@ extern "C" void WCRGroupLeaveOnMessage(const void *message) {
                 double now = [[NSDate date] timeIntervalSince1970];
                 if (LeaveIsLive(noticeEvent.epoch, now) &&
                     !ClaimLeaveNotice(noticeEvent, now)) {
-                    HideDuplicateLeave(const_cast<void *>(message), messageType, slots,
-                                       noticeEvent.groupID);
+                    HideDuplicateLeave(slots);
                     os_log_info(WCRLeaveLog(), "group leave duplicate suppressed");
                     return;
                 }
