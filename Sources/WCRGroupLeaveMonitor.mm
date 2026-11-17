@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -23,7 +24,8 @@
 // 群系统事件经过同一收口时有三种形态：10000 是灰字提示（「张三退出了群聊」），
 // 10002 是原始 sysmsg XML（delchatroommember / sysmsgtemplate），49 是部分群
 // 机器人/群助手发出的退群通知 appmsg。只认前两种时，实测的「检测到 F 退出本群」
-// 会直接被丢掉。内容仍必须像退群，普通聊天和撤回 XML 排除。
+// 会直接被丢掉。三条都会显示，所以同一个人短时间里只保留第一条，后面的收掉。
+// 内容仍必须像退群，普通聊天和撤回 XML 排除。
 //
 // 认出来之后改写正文：有用户名时换成和进群提示一样的 sysmsgtemplate，
 // {name} 落在 link_profile 上，点群昵称打开资料页。49 的 appmsg 外壳无法显示
@@ -39,6 +41,8 @@ constexpr size_t kMaxContentBytes = 65536;
 constexpr size_t kMaxScanBytes = 0x200;
 constexpr char kChatroomSuffix[] = "@chatroom";
 constexpr size_t kChatroomSuffixLength = 9;
+// 同一次退群的灰字、XML、群助手卡片会隔几秒各到一条。按看到的时刻去重。
+constexpr double kLeaveDedupSeconds = 60.0;
 
 NSString *const kTemplateDefaultsKey = @"WCRefineMacGroupLeaveTemplate";
 constexpr size_t kMaxTemplateBytes = 1000;
@@ -222,6 +226,7 @@ struct GroupLeaveEvent {
     std::string groupID;
     std::string kind;       // quit / kicked / unknown
     std::string timeText;
+    double epoch = 0;
     std::vector<Member> members;
 };
 
@@ -539,8 +544,8 @@ bool ParseGroupLeaveEvent(const std::string &content, void *message, GroupLeaveE
         out->who = names.empty() ? std::string("未知成员") : JoinWithSeparator(names);
     }
 
-    double epoch = EpochFromPayload(content, message);
-    out->timeText = FormatEpoch(epoch);
+    out->epoch = EpochFromPayload(content, message);
+    out->timeText = FormatEpoch(out->epoch);
     return true;
 }
 
@@ -914,10 +919,135 @@ bool AssignMessageType(void *message, uint32_t type) {
     return true;
 }
 
+#pragma mark - 同一次退群只提示一条
+
+struct SeenLeave {
+    std::string groupID;
+    std::string kind;   // id / name
+    std::string value;
+    double at = 0;
+};
+
+std::mutex gSeenMutex;
+std::vector<SeenLeave> gSeenLeaves;
+
+bool RealLeaveName(const std::string &name) {
+    return !name.empty() && name != "未知成员";
+}
+
+bool LeaveIsLive(double epoch, double now) {
+    if (epoch <= 0) return false;
+    double age = now - epoch;
+    // 刚到的灰字、XML、群助手卡片。更早的历史记录滚进视野时照常改写，不参与去重。
+    return age >= -5.0 && age <= kLeaveDedupSeconds;
+}
+
+void PruneSeenLeaves(double now) {
+    gSeenLeaves.erase(std::remove_if(gSeenLeaves.begin(), gSeenLeaves.end(), [&](const SeenLeave &item) {
+        return now - item.at > kLeaveDedupSeconds;
+    }), gSeenLeaves.end());
+    if (gSeenLeaves.size() > 64) {
+        gSeenLeaves.erase(gSeenLeaves.begin(), gSeenLeaves.end() - 64);
+    }
+}
+
+bool SeenLeaveValue(const std::string &group, const std::string &kind,
+                    const std::string &value, double now) {
+    if (value.empty()) return false;
+    for (const auto &item : gSeenLeaves) {
+        if (item.kind != kind || item.value != value) continue;
+        if (now - item.at > kLeaveDedupSeconds) continue;
+        if (!group.empty() && !item.groupID.empty() && group != item.groupID) continue;
+        return true;
+    }
+    return false;
+}
+
+void RememberLeaveValue(const std::string &group, const std::string &kind,
+                        const std::string &value, double now) {
+    if (value.empty()) return;
+    if (SeenLeaveValue(group, kind, value, now)) return;
+    gSeenLeaves.push_back({group, kind, value, now});
+}
+
+std::string MemberDisplayName(const Member &member) {
+    if (!RealLeaveName(member.name) || member.name == member.id) return "";
+    return member.name;
+}
+
+// 这条里每个能对上的人之前都提示过，才算同一次退群的重复。
+// 有新人时仍提示，避免「A 已提示、随后 A 和 B 被一起移出」把 B 吞掉。
+bool ClaimLeaveNotice(const GroupLeaveEvent &event, double now) {
+    struct Identity {
+        std::string id;
+        std::string name;
+    };
+    std::vector<Identity> people;
+    for (const auto &member : event.members) {
+        std::string name = MemberDisplayName(member);
+        if (member.id.empty() && name.empty()) continue;
+        people.push_back({member.id, name});
+    }
+    if (people.empty() && RealLeaveName(event.who)) {
+        people.push_back({"", event.who});
+    }
+
+    std::lock_guard<std::mutex> lock(gSeenMutex);
+    PruneSeenLeaves(now);
+    int comparable = 0;
+    bool allSeen = true;
+    for (const auto &person : people) {
+        bool hasID = !person.id.empty();
+        bool hasName = !person.name.empty();
+        if (!hasID && !hasName) continue;
+        comparable++;
+        bool idSeen = hasID && SeenLeaveValue(event.groupID, "id", person.id, now);
+        bool nameSeen = hasName && SeenLeaveValue(event.groupID, "name", person.name, now);
+        // 名字已经伴随资料链接提示过时，群助手卡片里的另一套账号也算同一个人。
+        // 之前只有明文、这条才带用户名，则再提示一次，把可点的昵称留下来。
+        bool linked = hasName && SeenLeaveValue(event.groupID, "link", person.name, now);
+        bool seen = idSeen || nameSeen;
+        if (hasID && !idSeen && nameSeen && !linked) seen = false;
+        if (!seen) allSeen = false;
+    }
+    if (comparable == 0) return true;
+    if (allSeen) return false;
+
+    for (const auto &person : people) {
+        RememberLeaveValue(event.groupID, "id", person.id, now);
+        RememberLeaveValue(event.groupID, "name", person.name, now);
+        if (!person.id.empty() && !person.name.empty()) {
+            RememberLeaveValue(event.groupID, "link", person.name, now);
+        }
+    }
+    if (RealLeaveName(event.who)) {
+        RememberLeaveValue(event.groupID, "name", event.who, now);
+    }
+    return true;
+}
+
+// 重复的那条改成普通灰字，只留零宽哨兵。
+// 不能写成空的 tmpl_type_profile：微信渲染资料链接时会去读一条空记录的 +0x1c4，直接闪退。
+void HideDuplicateLeave(void *message, uint32_t messageType,
+                        const std::vector<LeaveSlot> &slots,
+                        const std::string &groupID) {
+    const std::string hidden(kLeaveSentinel);
+    for (const auto &slot : slots) {
+        if (AlreadyRewritten(slot.text) || !LooksLikeGroupLeave(slot.text)) continue;
+        AssignLeaveText(slot.address, hidden);
+    }
+    // 10002 / 49 还会按 XML 再解析。收成 10000 纯文本，解析器碰不到资料链接。
+    if (messageType != kSystemTipType) {
+        AssignMessageType(message, kSystemTipType);
+        if (messageType == kAppMessageType) AssignFromUser(message, groupID);
+    }
+}
+
 }  // namespace
 
 // 捕获点观察者回调：每条进入收口函数的消息都会经过这里。先认 10000/10002/49，
-// 再认退群文案。灰字每次都改，除非正文里已经有哨兵。
+// 再认退群文案。灰字每次都改，除非正文里已经有哨兵。同一群同一成员 60 秒内
+// 只保留第一条，后面的灰字、XML 和群助手卡片收成普通灰字。
 // 任何异常都必须吞掉——绝不能让解析器带病运行。
 extern "C" void WCRGroupLeaveOnMessage(const void *message) {
     if (!message || !gEnabled.load()) return;
@@ -965,6 +1095,17 @@ extern "C" void WCRGroupLeaveOnMessage(const void *message) {
                     borrowedFromTable = true;
                 } else if (borrowed.empty()) {
                     borrowed = linkable;
+                }
+            }
+
+            if (haveNotice) {
+                double now = [[NSDate date] timeIntervalSince1970];
+                if (LeaveIsLive(noticeEvent.epoch, now) &&
+                    !ClaimLeaveNotice(noticeEvent, now)) {
+                    HideDuplicateLeave(const_cast<void *>(message), messageType, slots,
+                                       noticeEvent.groupID);
+                    os_log_info(WCRLeaveLog(), "group leave duplicate suppressed");
+                    return;
                 }
             }
 
