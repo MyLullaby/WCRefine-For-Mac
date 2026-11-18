@@ -33,6 +33,7 @@ DIST_APP := dist/$(DIST_NAME)-macos-arm64.zip
 DIST_SOURCE := dist/$(DIST_NAME)-source.tar.gz
 
 SHARE_APP := $(BUILD_DIR)/WCRefineShare.app
+SHARE_SIGNATURE := $(BUILD_DIR)/.WCRefineShare.signed
 SHARE_TEMPLATE := $(BUILD_DIR)/share-template/WCRefineShare.appex
 
 .PHONY: all app clean check dist help share
@@ -67,11 +68,13 @@ $(APP_BINARY): $(APP_SOURCES) Sources/WCRInstaller.h Sources/WCRMachOInjector.h 
 	$(CXX) $(OBJC_FLAGS) -framework Cocoa -framework Foundation \
 		-o $@ $(APP_SOURCES)
 
-$(APP_SIGNATURE): $(APP_BINARY) $(BUILD_DIR)/WCRefineMac.dylib $(PET_STAGE)/pet.js Resources/Info.plist $(APP_ICON) $(APP_SOCIAL_ICONS)
+$(APP_SIGNATURE): $(APP_BINARY) $(BUILD_DIR)/WCRefineMac.dylib $(PET_STAGE)/pet.js Resources/Info.plist $(APP_ICON) $(APP_SOCIAL_ICONS) $(SHARE_SIGNATURE)
 	cp Resources/Info.plist $(APP_BUNDLE)/Contents/Info.plist
 	cp $(BUILD_DIR)/WCRefineMac.dylib $(APP_BUNDLE)/Contents/Resources/WCRefineMac.dylib
 	cp $(APP_ICON) $(APP_BUNDLE)/Contents/Resources/WCRefine.icns
 	cp $(APP_SOCIAL_ICONS) $(APP_BUNDLE)/Contents/Resources/
+	rm -rf $(APP_BUNDLE)/Contents/Resources/WCRefineShare.app
+	ditto $(SHARE_APP) $(APP_BUNDLE)/Contents/Resources/WCRefineShare.app
 	rm -rf $(APP_BUNDLE)/Contents/Resources/wcrefine-pet \
 		$(APP_BUNDLE)/Contents/Resources/kimi-pet
 	cp -R $(PET_STAGE) $(APP_BUNDLE)/Contents/Resources/kimi-pet
@@ -96,6 +99,9 @@ dist: all
 		unzip -q "$(DIST_APP)" -d "$$tmp" && \
 		cmp -s "$(APP_ICON)" "$$tmp/WCRefine-for-Mac.app/Contents/Resources/WCRefine.icns" && \
 		test "$$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$$tmp/WCRefine-for-Mac.app/Contents/Info.plist")" = "WCRefine.icns" && \
+		test -x "$$tmp/WCRefine-for-Mac.app/Contents/Resources/WCRefineShare.app/Contents/MacOS/WCRefineShare" && \
+		test -x "$$tmp/WCRefine-for-Mac.app/Contents/Resources/WCRefineShare.app/Contents/Helpers/WCRefineShareHost" && \
+		test -x "$$tmp/WCRefine-for-Mac.app/Contents/Resources/WCRefineShare.app/Contents/Helpers/WCRefineShare.appex/Contents/MacOS/WCRefineShare" && \
 		codesign --verify --deep --strict "$$tmp/WCRefine-for-Mac.app"; \
 		status=$$?; rm -rf "$$tmp"; exit $$status
 	cd dist && shasum -a 256 "$(notdir $(DIST_SOURCE))" "$(notdir $(DIST_APP))" \
@@ -104,7 +110,7 @@ dist: all
 		"$(CURDIR)/$(DIST_SOURCE)" "$(CURDIR)/$(DIST_APP)" \
 		"$(CURDIR)/dist/$(DIST_NAME)-sha256.txt"
 
-share: $(SHARE_APP)
+share: $(SHARE_SIGNATURE)
 
 $(BUILD_DIR)/WCRefineShareHost: Share/WCRShareHostStub.m
 	@mkdir -p $(BUILD_DIR)
@@ -122,7 +128,7 @@ $(SHARE_APP)/Contents/MacOS/WCRefineShare: Share/WCRShareHost.mm Sources/WCROthe
 	$(CXX) $(OBJC_FLAGS) -framework Cocoa -framework Foundation -framework ApplicationServices \
 		-o $@ Share/WCRShareHost.mm Sources/WCROtherApps.mm
 
-$(SHARE_APP): $(SHARE_APP)/Contents/MacOS/WCRefineShare $(SHARE_TEMPLATE)/Contents/MacOS/WCRefineShare \
+$(SHARE_SIGNATURE): $(SHARE_APP)/Contents/MacOS/WCRefineShare $(SHARE_TEMPLATE)/Contents/MacOS/WCRefineShare \
 		$(BUILD_DIR)/WCRefineShareHost Share/Info.plist Share/Share.entitlements
 	mkdir -p $(SHARE_APP)/Contents/Resources $(SHARE_APP)/Contents/Helpers
 	cp Share/Info.plist $(SHARE_APP)/Contents/Info.plist
@@ -137,6 +143,7 @@ $(SHARE_APP): $(SHARE_APP)/Contents/MacOS/WCRefineShare $(SHARE_TEMPLATE)/Conten
 	codesign --force --sign - --timestamp=none $(SHARE_APP)/Contents/Helpers/WCRefineShareHost
 	codesign --force --sign - --timestamp=none $(SHARE_APP)
 	codesign --verify --strict $(SHARE_APP)
+	@touch $@
 
 clean:
 	rm -rf $(BUILD_DIR)

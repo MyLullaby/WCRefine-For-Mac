@@ -424,6 +424,27 @@ BOOL WCRInstallEnhancedCopyWithOptions(NSURL *sourceApp,
             @throw WCRInstallError(@"重签名后缺少沙盒或插件加载所需权限");
         }
 
+        // 管理 App 与源码命令行构建都将 Share 宿主放在 dylib 同目录。
+        NSURL *sourceShare = [[[NSURL fileURLWithPath:dylibPath] URLByDeletingLastPathComponent]
+            URLByAppendingPathComponent:@"WCRefineShare.app" isDirectory:YES];
+        NSURL *supportURL = [[fileManager URLsForDirectory:NSApplicationSupportDirectory
+                                                inDomains:NSUserDomainMask].firstObject
+            URLByAppendingPathComponent:@"WCRefine" isDirectory:YES];
+        NSURL *installedShare = [supportURL URLByAppendingPathComponent:@"WCRefineShare.app"
+                                                                          isDirectory:YES];
+        WCRReport(progress, @"安装其他应用扩展…");
+        if (!WCRRunProcess(@"/usr/bin/codesign",
+                           @[@"--verify", @"--deep", @"--strict", sourceShare.path],
+                           &operationError) ||
+            ![fileManager createDirectoryAtURL:supportURL withIntermediateDirectories:YES
+                                   attributes:nil error:&operationError] ||
+            !WCRCopyItem(sourceShare, installedShare, &operationError) ||
+            !WCRRunProcess(@"/System/Library/Frameworks/CoreServices.framework/Frameworks/"
+                           @"LaunchServices.framework/Support/lsregister",
+                           @[@"-f", installedShare.path], &operationError)) {
+            @throw operationError;
+        }
+
         NSString *oldAppPath = nil;
         if ([fileManager fileExistsAtPath:destinationPath]) {
             oldAppPath = [parent.path stringByAppendingPathComponent:
